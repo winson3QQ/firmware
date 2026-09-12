@@ -1,0 +1,2 @@
+# Batman: bake the provisioning/config-survival/observability package into the image (#88/#89/#108)
+CONFIG_PACKAGE_batman-provision=y
