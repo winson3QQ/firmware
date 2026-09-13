@@ -5,4 +5,4 @@ src-git packages https://github.com/openwrt/packages.git^c804b78be39d011eb09e49f
 src-git luci https://github.com/OpenMANET/luci.git^c804b78be39d011eb09e49fea26fe035730eee41
 src-git routing https://github.com/openwrt/routing.git^c804b78be39d011eb09e49fea26fe035730eee41
 src-git telephony https://github.com/openwrt/telephony.git^c804b78be39d011eb09e49fea26fe035730eee41
-src-git batman https://github.com/winson3QQ/Batman.git^c804b78be39d011eb09e49fea26fe035730eee41
+src-git batman https://github.com/winson3QQ/Batman.git;feat/batman-provision-feed-108
