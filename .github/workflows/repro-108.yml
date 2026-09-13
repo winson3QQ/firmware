@@ -1,9 +1,10 @@
 name: Repro 1.8.0 bcm2711 (gate-3)
 
-# Reproduces the OpenMANET 1.8.0 ekh-bcm2711 build to compare buildinfo/manifest
-# sha256 against the 1.8.0 release (Batman #108 gate 3). This file only adds a
-# workflow_dispatch entry point; it does not touch .config / feeds / version, so
-# the produced *.buildinfo hashes are unaffected by its presence.
+# Reproduces the OpenMANET 1.8.0 ekh-bcm2711 + ekh-bcm2710 build to compare buildinfo/manifest
+# sha256 against the 1.8.0 release (Batman #108 gate 3), and (on branches with our delta) to
+# build the v2.0 batman-provision image. This file only adds a workflow_dispatch entry point;
+# it does not touch .config / feeds / version, so the produced *.buildinfo hashes are
+# unaffected by its presence.
 
 on:
   workflow_dispatch:
@@ -17,3 +18,12 @@ jobs:
       target: bcm27xx
       subtarget: bcm2711
       description: "Raspberry Pi 4, CM4 (gate-3 repro of 1.8.0)"
+
+  build-ekh-bcm2710:
+    name: Build ekh-bcm2710
+    uses: ./.github/workflows/build-firmware.yml
+    with:
+      board: ekh-bcm2710
+      target: bcm27xx
+      subtarget: bcm2710
+      description: "Raspberry Pi 3B/B+/A+, Zero 2 W (gate-3 repro of 1.8.0)"

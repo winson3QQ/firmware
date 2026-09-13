@@ -1,0 +1,20 @@
+Subject: [PATCH] batman: ETHFIX — Pi 3/Zero 2 W wired L3 (bcm2710,mm*-spi board-name arms) (#108)
+# Same override pattern as the bcm2711 fix: distroconfig.txt sets
+# board-name="bcm2710,mm6108-spi" so board_name() returns that; stock 03_openmanet_eth has
+# no bcm2710,mm* arm -> boards with an eth0 (Pi 3 B/B+) come up with no wired L3.
+# Adds the four bcm2710,mm{6108,8108}-{sdio,spi} arms. No effect on eth0-less boards (Zero 2 W,
+# Pi 3 A+) since they have no eth0 to begin with. Refs #108.
+---
+--- a/feeds/openmanet/boards/bsp-bcm271x/files/board.d/03_openmanet_eth
++++ b/feeds/openmanet/boards/bsp-bcm271x/files/board.d/03_openmanet_eth
+@@ -10,6 +10,10 @@
+ board=$(board_name)
+ 
+ case "$board" in
++bcm2710,mm6108-sdio |\
++bcm2710,mm6108-spi |\
++bcm2710,mm8108-sdio |\
++bcm2710,mm8108-spi |\
+ bcm2712,mm6108-sdio |\
+ bcm2712,mm6108-spi |\
+ bcm2712,mm8108-sdio |\
