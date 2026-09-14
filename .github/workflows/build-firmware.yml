@@ -152,6 +152,37 @@ jobs:
           echo "Target: ${{ inputs.target }}/${{ inputs.subtarget }}" >> artifacts/${{ inputs.board }}/BOARD_INFO.txt
           echo "Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> artifacts/${{ inputs.board }}/BOARD_INFO.txt
 
+      # #89 A/B OTA: repackage the standard image's rootfs+boot into the batman A/B sysupgrade tar
+      # (root.squashfs + boot/ + metadata) that our /lib/upgrade/platform.sh consumes on the GPT A/B
+      # card. Best-effort (continue-on-error): a failure here must never fail the firmware build; the
+      # standard image is still uploaded. Only the A/B card board (ekh-bcm2711) has A/B slots today.
+      - name: Build A/B OTA payload (#89)
+        if: inputs.board == 'ekh-bcm2711'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -eux
+          D="bin/targets/${{ inputs.target }}/${{ inputs.subtarget }}"
+          ls -lah "$D" || true
+          # 1) exactly-sized standalone rootfs squashfs (the image-assembly input; NOT the padded partition)
+          SQ=$(ls "$D"/*-rootfs.squashfs "$D"/*rootfs.squashfs "$D"/*.squashfs 2>/dev/null | head -1 || true)
+          if [ -z "$SQ" ]; then echo "no standalone rootfs squashfs in $D — dir listing for diagnosis:"; find "$D" -maxdepth 1 -type f | sort; exit 1; fi
+          # 2) bootdir = the boot FAT (p1) of the finished sysupgrade image (loop-mounted read-only)
+          IMGGZ=$(ls "$D"/*sysupgrade.img.gz | head -1)
+          gunzip -kf "$IMGGZ"; IMG="${IMGGZ%.gz}"
+          LOOP=$(sudo losetup -Pf --show "$IMG")
+          sudo mkdir -p /mnt/abboot
+          sudo mount -o ro "${LOOP}p1" /mnt/abboot
+          # 3) fetch the payload packer from the batman feed's source repo at the exact pinned commit
+          PIN=$(sed -n 's|.*Batman\.git\^\([0-9a-f]\{7,40\}\).*|\1|p' feeds.conf.default | head -1)
+          curl -fsSL "https://raw.githubusercontent.com/winson3QQ/Batman/${PIN}/scripts/build-ab-payload.sh" -o build-ab-payload.sh
+          chmod +x build-ab-payload.sh
+          # 4) assemble into the upload dir — "Upload build artifacts" (path: artifacts/<board>/*) ships it
+          ./build-ab-payload.sh "$SQ" /mnt/abboot "${{ inputs.board }}" "artifacts/${{ inputs.board }}/ab-payload-${{ inputs.board }}.tar.gz"
+          sudo umount /mnt/abboot || true
+          sudo losetup -d "$LOOP" || true
+          ls -lah "artifacts/${{ inputs.board }}"
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
