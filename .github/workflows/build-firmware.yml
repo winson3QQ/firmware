@@ -164,12 +164,20 @@ jobs:
           set -eux
           D="bin/targets/${{ inputs.target }}/${{ inputs.subtarget }}"
           ls -lah "$D" || true
-          # 1) exactly-sized standalone rootfs squashfs (the image-assembly input; NOT the padded partition)
-          SQ=$(ls "$D"/*-rootfs.squashfs "$D"/*rootfs.squashfs "$D"/*.squashfs 2>/dev/null | head -1 || true)
-          if [ -z "$SQ" ]; then echo "no standalone rootfs squashfs in $D — dir listing for diagnosis:"; find "$D" -maxdepth 1 -type f | sort; exit 1; fi
-          # 2) bootdir = the boot FAT (p1) of the finished sysupgrade image (loop-mounted read-only)
-          IMGGZ=$(ls "$D"/*sysupgrade.img.gz | head -1)
+          # 1) bin/targets ships ONLY whole-disk sysupgrade images (no standalone rootfs.squashfs —
+          #    #89 bench confirmed), so carve the rootfs out of the mm6108-spi image (manet01's variant).
+          IMGGZ=$(ls "$D"/*mm6108-spi*sysupgrade.img.gz 2>/dev/null | head -1)
+          [ -n "$IMGGZ" ] || { echo "no mm6108-spi sysupgrade image in $D — dir listing:"; find "$D" -maxdepth 1 -type f | sort; exit 1; }
           gunzip -kf "$IMGGZ"; IMG="${IMGGZ%.gz}"
+          # MBR partition 2 = rootfs squashfs. start LBA at byte 470 (part-entry-2 +8), LE u32; squashfs
+          # bytes_used at p2off+40, LE u64. Carve exactly bytes_used (a standalone squashfs == its size).
+          P2OFF=$(( $(dd if="$IMG" bs=1 skip=470 count=4 2>/dev/null | od -An -tu4 | tr -d ' ') * 512 ))
+          [ "$(dd if="$IMG" bs=1 skip="$P2OFF" count=4 2>/dev/null)" = hsqs ] || { echo "p2@$P2OFF not squashfs"; exit 1; }
+          SQBYTES=$(dd if="$IMG" bs=1 skip=$((P2OFF+40)) count=8 2>/dev/null | od -An -tu8 | tr -d ' ')
+          dd if="$IMG" of=root.squashfs bs=1M iflag=skip_bytes,count_bytes skip="$P2OFF" count="$SQBYTES" 2>/dev/null
+          echo "carved root.squashfs: $(wc -c < root.squashfs) bytes (expected $SQBYTES)"
+          # 2) bootdir = the boot FAT (p1) of the same image (ro loop-mount; vfat lookups are
+          #    case-insensitive, so build-ab-payload.sh finds KERNEL8.IMG etc via its lowercase names).
           LOOP=$(sudo losetup -Pf --show "$IMG")
           sudo mkdir -p /mnt/abboot
           sudo mount -o ro "${LOOP}p1" /mnt/abboot
@@ -178,7 +186,8 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/winson3QQ/Batman/${PIN}/scripts/build-ab-payload.sh" -o build-ab-payload.sh
           chmod +x build-ab-payload.sh
           # 4) assemble into the upload dir — "Upload build artifacts" (path: artifacts/<board>/*) ships it
-          ./build-ab-payload.sh "$SQ" /mnt/abboot "${{ inputs.board }}" "artifacts/${{ inputs.board }}/ab-payload-${{ inputs.board }}.tar.gz"
+          mkdir -p "artifacts/${{ inputs.board }}"
+          ./build-ab-payload.sh root.squashfs /mnt/abboot "${{ inputs.board }}" "artifacts/${{ inputs.board }}/ab-payload-${{ inputs.board }}.tar.gz"
           sudo umount /mnt/abboot || true
           sudo losetup -d "$LOOP" || true
           ls -lah "artifacts/${{ inputs.board }}"
