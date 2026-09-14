@@ -1,12 +1,18 @@
 name: Fast Build (incremental, cached) — ekh-bcm2711
 
-# Iteration build for #89 feed work: caches the heavy, rarely-changing tree (toolchain/staging_dir,
-# build_dir, dl, ccache) so a files-only batman-provision change rebuilds in minutes instead of ~2h.
-# NOT for reproducibility — repro-108.yml stays clean-from-scratch for the gate-3 hash check.
-# First run is still ~2h (it SEEDS the cache); every run after that restores the warm tree and only
-# rebuilds what changed. Cache key is deliberately INDEPENDENT of the batman feed pin (batman is
-# files-only, so bumping its pin must not invalidate the toolchain). Bump CACHE_VER when the OpenWrt
-# base / non-batman feeds move and you want a fresh toolchain.
+# Iteration build for #89 feed work: caches the heavy, rarely-changing tree so a files-only
+# batman-provision change rebuilds fast instead of ~2h. NOT for reproducibility — repro-108.yml stays
+# clean-from-scratch for the gate-3 hash check. The FIRST run is still ~2h (it SEEDS the cache); runs
+# after that restore the warm tree + ccache and only rebuild what changed.
+#
+# Two-tier cache (GitHub's limit is 10 GB/repo, and staging_dir+build_dir can exceed that):
+#   * SMALL tier (.ccache + dl): a few GB, always fits, always saved. Even a from-scratch make with a
+#     warm ccache is much faster, so this tier alone is a solid win if the big tier ever fails.
+#   * TREE tier (staging_dir + build_dir): the real incremental win (skips the ~1h toolchain + built
+#     packages), but big. restore + save(if:always) so the toolchain is captured even if a later step
+#     fails, and best-effort so a >10 GB save that fails never fails the job.
+# Cache keys are INDEPENDENT of the batman feed pin (batman is files-only; bumping it must not drop the
+# toolchain). Bump CACHE_VER when the OpenWrt base / non-batman feeds move and you want a fresh tree.
 
 on:
   workflow_dispatch:
@@ -54,19 +60,28 @@ jobs:
             libnl-genl-3-dev libgps-dev libcap-dev pkg-config libopus-dev \
             libopusfile-dev portaudio19-dev net-tools libpcre3-dev libpcre3 upx-ucl ccache
 
-      - name: Restore warm build tree (toolchain / build_dir / dl / ccache)
+      # --- SMALL cache tier: ccache + downloads. Always fits, always saved (auto post-save). ---
+      - name: Cache ccache + dl (small tier)
         uses: actions/cache@v5
+        with:
+          path: |
+            .ccache
+            dl
+          key: fastbuild-${{ inputs.board }}-${{ env.CACHE_VER }}-small-${{ github.run_id }}
+          restore-keys: |
+            fastbuild-${{ inputs.board }}-${{ env.CACHE_VER }}-small-
+
+      # --- TREE cache tier: toolchain + build_dir. Restore now; save at the end (if: always). ---
+      - name: Restore warm tree (staging_dir + build_dir)
+        id: tree
+        uses: actions/cache/restore@v5
         with:
           path: |
             staging_dir
             build_dir
-            dl
-            .ccache
-          # run-id-suffixed key never hits exactly (so a fresh snapshot is always saved at job end),
-          # while restore-keys pulls the most recent prior snapshot for this board+CACHE_VER.
-          key: fastbuild-${{ inputs.board }}-${{ env.CACHE_VER }}-${{ github.run_id }}
+          key: fastbuild-${{ inputs.board }}-${{ env.CACHE_VER }}-tree-${{ github.run_id }}
           restore-keys: |
-            fastbuild-${{ inputs.board }}-${{ env.CACHE_VER }}-
+            fastbuild-${{ inputs.board }}-${{ env.CACHE_VER }}-tree-
 
       - name: Use HTTPS for GitHub clones in CI
         run: |
@@ -85,7 +100,7 @@ jobs:
         run: |
           grep -q '^CONFIG_CCACHE=y' .config || echo 'CONFIG_CCACHE=y' >> .config
           make defconfig
-          ccache -M 5G || true
+          ccache -M 6G || true
           ccache -z || true
 
       - name: Download dependencies
@@ -97,14 +112,26 @@ jobs:
         run: |
           set -o pipefail
           make -j$(nproc) V=s 2>&1 | tee build.log || {
-            echo "parallel build failed — retrying single-threaded for a clean error"; make -j1 V=s 2>&1 | tee -a build.log; }
+            echo "parallel build failed — retry single-threaded for a clean error"; make -j1 V=s 2>&1 | tee -a build.log; }
           echo "=== ccache stats ==="; ccache -s || true
 
-      - name: Report cache sizes (10GB/repo GitHub limit — watch this)
+      - name: Report cache sizes (watch vs 10 GB/repo limit)
         if: always()
         run: |
+          echo "=== tree cache restore hit key: ${{ steps.tree.outputs.cache-matched-key }} ==="
           du -sh staging_dir build_dir dl .ccache 2>/dev/null || true
           df -h
+
+      # save the big tree even if the build failed, so a partial toolchain is still captured; best-effort
+      - name: Save warm tree (staging_dir + build_dir)
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            staging_dir
+            build_dir
+          key: fastbuild-${{ inputs.board }}-${{ env.CACHE_VER }}-tree-${{ github.run_id }}
 
       - name: Prepare artifacts
         run: |
