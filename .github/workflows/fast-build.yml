@@ -150,7 +150,11 @@ jobs:
           # bench), so carve the rootfs out of the mm6108-spi image (manet01's variant).
           IMGGZ=$(ls "$D"/*mm6108-spi*sysupgrade.img.gz 2>/dev/null | head -1)
           [ -n "$IMGGZ" ] || { echo "no mm6108-spi sysupgrade image in $D:"; find "$D" -maxdepth 1 -type f | sort; exit 1; }
-          gunzip -kf "$IMGGZ"; IMG="${IMGGZ%.gz}"
+          IMG="${IMGGZ%.gz}"
+          # gzip exits 2 on the harmless "trailing garbage ignored" warning; under `set -e` that aborts
+          # the step (#89 Build#6 died here). Tolerate it, then require a non-empty .img.
+          gunzip -kf "$IMGGZ" 2>/dev/null || true
+          [ -s "$IMG" ] || { echo "gunzip produced no image from $IMGGZ"; exit 1; }
           # MBR partition 2 = rootfs squashfs. start LBA at byte 470 (part-entry-2 +8), LE u32; squashfs
           # bytes_used at p2off+40, LE u64. Carve exactly bytes_used.
           P2OFF=$(( $(dd if="$IMG" bs=1 skip=470 count=4 2>/dev/null | od -An -tu4 | tr -d ' ') * 512 ))
