@@ -1,0 +1,178 @@
+name: Fast Build (incremental, cached) — ekh-bcm2711
+
+# Iteration build for #89 feed work: caches the heavy, rarely-changing tree so a files-only
+# batman-provision change rebuilds fast instead of ~2h. NOT for reproducibility — repro-108.yml stays
+# clean-from-scratch for the gate-3 hash check. The FIRST run is still ~2h (it SEEDS the cache); runs
+# after that restore the warm tree + ccache and only rebuild what changed.
+#
+# Two-tier cache (GitHub's limit is 10 GB/repo, and staging_dir+build_dir can exceed that):
+#   * SMALL tier (.ccache + dl): a few GB, always fits, always saved. Even a from-scratch make with a
+#     warm ccache is much faster, so this tier alone is a solid win if the big tier ever fails.
+#   * TREE tier (staging_dir + build_dir): the real incremental win (skips the ~1h toolchain + built
+#     packages), but big. restore + save(if:always) so the toolchain is captured even if a later step
+#     fails, and best-effort so a >10 GB save that fails never fails the job.
+# Cache keys are INDEPENDENT of the batman feed pin (batman is files-only; bumping it must not drop the
+# toolchain). Bump CACHE_VER when the OpenWrt base / non-batman feeds move and you want a fresh tree.
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: 'Board name'
+        required: false
+        type: string
+        default: 'ekh-bcm2711'
+      target:
+        required: false
+        type: string
+        default: 'bcm27xx'
+      subtarget:
+        required: false
+        type: string
+        default: 'bcm2711'
+
+env:
+  CACHE_VER: v1
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+
+jobs:
+  fast-build:
+    name: Fast build ${{ inputs.board }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex g++ gawk gcc-multilib g++-multilib git gettext \
+            libncurses5-dev libssl-dev python3-setuptools rsync unzip golang-go zlib1g-dev swig file wget libnl-3-dev \
+            libnl-genl-3-dev libgps-dev libcap-dev pkg-config libopus-dev \
+            libopusfile-dev portaudio19-dev net-tools libpcre3-dev libpcre3 upx-ucl ccache
+
+      # --- SMALL cache tier: ccache + downloads. Always fits, always saved (auto post-save). ---
+      - name: Cache ccache + dl (small tier)
+        uses: actions/cache@v5
+        with:
+          path: |
+            .ccache
+            dl
+          key: fastbuild-${{ inputs.board }}-${{ env.CACHE_VER }}-small-${{ github.run_id }}
+          restore-keys: |
+            fastbuild-${{ inputs.board }}-${{ env.CACHE_VER }}-small-
+
+      # --- TREE cache tier: toolchain + build_dir. Restore now; save at the end (if: always). ---
+      - name: Restore warm tree (staging_dir + build_dir)
+        id: tree
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            staging_dir
+            build_dir
+          key: fastbuild-${{ inputs.board }}-${{ env.CACHE_VER }}-tree-${{ github.run_id }}
+          restore-keys: |
+            fastbuild-${{ inputs.board }}-${{ env.CACHE_VER }}-tree-
+
+      - name: Use HTTPS for GitHub clones in CI
+        run: |
+          git config --global --unset-all url."https://github.com/".insteadOf || true
+          git config --global --add url."https://github.com/".insteadOf "git@github.com:"
+          git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/"
+          git config --global --add url."https://github.com/".insteadOf "git://github.com/"
+          GIT_TERMINAL_PROMPT=0 git ls-remote git@github.com:OpenMANET/go-alfred.git HEAD
+          GIT_TERMINAL_PROMPT=0 git ls-remote ssh://git@github.com/OpenMANET/protobufs.git HEAD
+
+      - name: Configure build for ${{ inputs.board }}
+        run: |
+          ./scripts/openmanet_setup.sh -i -b ${{ inputs.board }}
+
+      - name: Enable ccache in the OpenWrt config
+        run: |
+          grep -q '^CONFIG_CCACHE=y' .config || echo 'CONFIG_CCACHE=y' >> .config
+          make defconfig
+          ccache -M 6G || true
+          ccache -z || true
+
+      - name: Download dependencies
+        run: |
+          make download -j$(nproc)
+
+      - name: Build firmware (incremental)
+        shell: bash
+        run: |
+          set -o pipefail
+          make -j$(nproc) V=s 2>&1 | tee build.log || {
+            echo "parallel build failed — retry single-threaded for a clean error"; make -j1 V=s 2>&1 | tee -a build.log; }
+          echo "=== ccache stats ==="; ccache -s || true
+
+      - name: Report cache sizes (watch vs 10 GB/repo limit)
+        if: always()
+        run: |
+          echo "=== tree cache restore hit key: ${{ steps.tree.outputs.cache-matched-key }} ==="
+          du -sh staging_dir build_dir dl .ccache 2>/dev/null || true
+          df -h
+
+      # save the big tree even if the build failed, so a partial toolchain is still captured; best-effort
+      - name: Save warm tree (staging_dir + build_dir)
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            staging_dir
+            build_dir
+          key: fastbuild-${{ inputs.board }}-${{ env.CACHE_VER }}-tree-${{ github.run_id }}
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts/${{ inputs.board }}
+          cp bin/targets/${{ inputs.target }}/${{ inputs.subtarget }}/*.img.gz artifacts/${{ inputs.board }}/ 2>/dev/null || true
+          cp bin/targets/${{ inputs.target }}/${{ inputs.subtarget }}/sha256sums artifacts/${{ inputs.board }}/ 2>/dev/null || true
+
+      - name: Build A/B OTA payload (#89)
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -eux
+          D="bin/targets/${{ inputs.target }}/${{ inputs.subtarget }}"
+          ls -lah "$D" || true
+          SQ=$(ls "$D"/*-rootfs.squashfs "$D"/*rootfs.squashfs "$D"/*.squashfs 2>/dev/null | head -1 || true)
+          if [ -z "$SQ" ]; then echo "no standalone rootfs squashfs in $D:"; find "$D" -maxdepth 1 -type f | sort; exit 1; fi
+          IMGGZ=$(ls "$D"/*sysupgrade.img.gz | head -1)
+          gunzip -kf "$IMGGZ"; IMG="${IMGGZ%.gz}"
+          LOOP=$(sudo losetup -Pf --show "$IMG")
+          sudo mkdir -p /mnt/abboot
+          sudo mount -o ro "${LOOP}p1" /mnt/abboot
+          PIN=$(sed -n 's|.*Batman\.git\^\([0-9a-f]\{7,40\}\).*|\1|p' feeds.conf.default | head -1)
+          curl -fsSL "https://raw.githubusercontent.com/winson3QQ/Batman/${PIN}/scripts/build-ab-payload.sh" -o build-ab-payload.sh
+          chmod +x build-ab-payload.sh
+          ./build-ab-payload.sh "$SQ" /mnt/abboot "${{ inputs.board }}" "artifacts/${{ inputs.board }}/ab-payload-${{ inputs.board }}.tar.gz"
+          sudo umount /mnt/abboot || true
+          sudo losetup -d "$LOOP" || true
+          ls -lah "artifacts/${{ inputs.board }}"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: fastbuild-${{ inputs.board }}
+          path: artifacts/${{ inputs.board }}/*
+          if-no-files-found: error
+          retention-days: 5
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fastbuild-log-${{ inputs.board }}
+          path: build.log
+          retention-days: 30
