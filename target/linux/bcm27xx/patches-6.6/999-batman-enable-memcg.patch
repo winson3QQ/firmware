@@ -1,0 +1,25 @@
+From: Batman <yellow.winson@gmail.com>
+Subject: [PATCH] batman: enable the memory cgroup controller on Pi 4 (#159/#98)
+
+Drop cgroup_disable=memory from the bcm2711 /chosen bootargs so the memory
+cgroup controller is available, letting docker enforce --memory on payload
+containers (#98). Upstream 950-1349 removed the RPi implicit cgroup_disable
+("memory"), so on this tree the DTS bootargs token is the ONLY thing turning
+memcg off; removing it is sufficient and matches the DTB byte-patch validated
+on manet01. This touches a .dtsi only -> just the DTB is recompiled, the kernel
+binary and vermagic (6.6.138~42a5f0cc) are unchanged, so out-of-tree kmods
+stay ABI-compatible.
+
+Signed-off-by: Batman <yellow.winson@gmail.com>
+---
+--- a/arch/arm/boot/dts/broadcom/bcm2711-rpi-ds.dtsi
++++ b/arch/arm/boot/dts/broadcom/bcm2711-rpi-ds.dtsi
+@@ -3,7 +3,7 @@
+ 
+ / {
+ 	chosen {
+-		bootargs = "coherent_pool=1M 8250.nr_uarts=1 snd_bcm2835.enable_headphones=0 cgroup_disable=memory numa_policy=interleave";
++		bootargs = "coherent_pool=1M 8250.nr_uarts=1 snd_bcm2835.enable_headphones=0 numa_policy=interleave";
+ 	};
+ 
+ 	__overrides__ {

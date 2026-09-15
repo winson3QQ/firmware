@@ -1,0 +1,4 @@
+# Batman payload-host: bake the Docker engine closure into the image (#159).
+# Board-gated to bcm2711 via the meta-package DEPENDS (@TARGET_bcm27xx_bcm2711)
+# and via being symlinked only into boards/ekh-bcm2711 (never ekh-bcm2710/Zero 2 W).
+CONFIG_PACKAGE_batman-payload-host=y
