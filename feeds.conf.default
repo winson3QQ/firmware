@@ -5,4 +5,4 @@ src-git packages https://github.com/openwrt/packages.git^953b6d47b4e9f0ad3c39547
 src-git luci https://github.com/OpenMANET/luci.git^53e65158f7075109d140f8943b4a1f0eb6d84339
 src-git routing https://github.com/openwrt/routing.git^178a40d321d6c11f18528f34777f4e24ce62b19a
 src-git telephony https://github.com/openwrt/telephony.git^92892fa285360b8981f62bf4e0a097e6449e7e33
-src-git batman https://github.com/winson3QQ/Batman.git^0437e679e0c76e39da9ae46213feaa9192d3f5f4
+src-git batman https://github.com/winson3QQ/Batman.git^65568911066d3d9c37524c381024e1576a08614b
