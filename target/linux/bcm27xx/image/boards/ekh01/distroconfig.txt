@@ -42,7 +42,7 @@ dtoverlay=uart5
 dtparam=act_led_trigger=none
 
 # adds ramoops device tree overlay
-dtoverlay=ramoops
+dtoverlay=ramoops-pi4,console-size=0x8000
 
 # automatically load sensor dtoverlays
 camera_auto_detect=1

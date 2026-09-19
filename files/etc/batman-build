@@ -1,0 +1,10 @@
+BATMAN_VERSION=1.4.4-wsl.1+21ab5cc.fw48bb494
+BATMAN_CHANNEL=wsl
+BATMAN_MILESTONE=targets v2.0 Build-gate (on 1.x DEV line until gate met)
+BATMAN_BUILD_DATE=2026-09-19
+BATMAN_BASE=OpenMANET-1.8.0-r28739-d9340319c6
+BATMAN_FEED_COMMIT=21ab5cc
+BATMAN_FW_COMMIT=48bb494
+BATMAN_FW_FEED_PIN=21ab5cc
+BATMAN_FEATURES=docker-in-image(#159),memcg,ab-p5,bootstrap-lockdown(#137),confinement-reconciler(#156),ro-containers(#98),ots(#162),payload-guardian-restore(#192),meshtest-baked,ramoops-L1-staged(#173)
+BATMAN_NOTE=WSL dev. #173 ramoops black box: Layer 1 (reg-cell) staged in src only (distroconfig dtoverlay=ramoops-pi4) NOT yet baked/flashed to fleet; shipped 1.4.x still has bare dtoverlay=ramoops -> pstore backend null, captures nothing. Layer 2 (reserved RAM at 0x0b000000 not surviving bcm2835-wdt reset; Pi4 has no PSCI) BLOCKED -> needs CONFIG_PSTORE_BLK kernel rebuild, bundle with #61/#112. Until L2 the black box records NOTHING. Next build MUST bump BATMAN_VERSION. feed @21ab5cc.
