@@ -1,10 +1,10 @@
-BATMAN_VERSION=1.4.5-wsl.1+21ab5cc.fw3540967
+BATMAN_VERSION=1.4.14-wsl.1+6763ed8.flashgo-rework.fwc19763a
 BATMAN_CHANNEL=wsl
 BATMAN_MILESTONE=targets v2.0 Build-gate (on 1.x DEV line until gate met)
-BATMAN_BUILD_DATE=2026-09-22
+BATMAN_BUILD_DATE=2026-09-25
 BATMAN_BASE=OpenMANET-1.8.0-r28739-d9340319c6
-BATMAN_FEED_COMMIT=21ab5cc
-BATMAN_FW_COMMIT=3540967
-BATMAN_FW_FEED_PIN=21ab5cc
-BATMAN_FEATURES=docker-in-image(#159),memcg,ab-p5,bootstrap-lockdown(#137),confinement-reconciler(#156),ro-containers(#98),ots(#162),payload-guardian-restore(#192),meshtest-baked,ramoops-baked(#173)
-BATMAN_NOTE=WSL dev, full feature set. #173 RESOLVED (2026-09-22): dtoverlay=ramoops-pi4 (correct 3-cell reg 0x0 0x0b000000 0x10000) now BAKED into distroconfig -> pstore backend=ramoops, kernel-panic + console crash capture works on HEALTHY Pi4 units (verified by controlled card-swap: survives on #03 and manet01, fails only on manet02). Past capture failures = per-unit hardware (manet02 DRAM does not preserve the reserved region across reset), NOT software; the earlier Layer-2 / CONFIG_PSTORE_BLK theory was wrong. Screen units with a controlled echo c panic; use a non-RAM sink for guaranteed fleet coverage. feed @21ab5cc.
+BATMAN_FEED_COMMIT=6763ed8
+BATMAN_FW_COMMIT=c19763a
+BATMAN_FW_FEED_PIN=6763ed8
+BATMAN_FEATURES=docker-in-image(#159),memcg,ab-p5,bootstrap-lockdown(#137),confinement-reconciler(#156),ro-containers(#98),generic-payload-manager(#167),ots-as-tenant(#162),ots-reflash-safe(#206),payload-guardian-restore(#192),config-seed-onjoin(#202),payload-config-golden,ab-autocommit(#211),daily-validation,meshtest-baked,ramoops-baked(#173),firstboot-grow(#201),flashgo-payloads(#159/#216),layered-autocommit(#216)
+BATMAN_NOTE=1.4.14 = clean re-stamp of the PR#216 flash-and-go rework (feat/215-159-flashgo-fixes @ 6763ed8), superseding the ambiguous in-session 1.4.13 iterations. Content = batman-provision r10 + batman-payload-host r6: layered autocommit (OS/docker-engine liveness + canary gate, first-load latch, app health OFF the OS-commit path), generalized+hardened firstload (per-tenant, sha256 verify, mv-not-rm offline copy, bad-tar quarantine, shell-watchdog load timeout — NOT the busybox-absent `timeout` applet), M5/M6/M9, feed-package install fix, daily-validation apps/ layout fix. HW-validated on manet04+manet02: flash-and-go zero-touch, reboot x2, OTA autocommit x2, full daily-validation 17/0 + ab-card 22/0, sysupgrade 02. fw=c19763a (firmware-fork changes pending commit).

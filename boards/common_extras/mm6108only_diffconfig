@@ -1,0 +1,22 @@
+# Fleet A/B radio config overlay (openmanet_setup.sh ... -x mm6108only).
+#
+# Two jobs, both strand-critical for the shared A/B rootfs:
+#
+# 1) mm6108-only: the A/B golden reuses ONE build_dir root.squashfs across both
+#    slots, so the rootfs must carry a single S1G radio driver. Shipping both
+#    mm6108 and mm8108 makes the driver refuse to load ("morse_sdio already
+#    registered"). ekh-bcm2711/target_diffconfig enables all three device
+#    profiles with per-device strips (correct for per-device .img, wrong for the
+#    shared rootfs), so strip mm8108 globally here.
+# CONFIG_PACKAGE_kmod-mm8108 is not set
+# CONFIG_PACKAGE_mm8108-firmware is not set
+# CONFIG_TARGET_DEVICE_bcm27xx_bcm2711_DEVICE_bcm2711_mm8108-usb is not set
+#
+# 2) Bake the Pi on-board wifi (brcmfmac) INTO the image as =y. The board config
+#    leaves these as =m (built but NOT installed in the squashfs -- verified: the
+#    manifest omits them). brcmfmac must occupy radio0 so morse (HaLow) stays
+#    radio1, matching fleet p5 layout; without it morse drops to radio0 and OTA
+#    strands seeded mesh nodes. =m + MODULE_DEFAULT is NOT enough; force =y.
+CONFIG_PACKAGE_kmod-brcmfmac=y
+CONFIG_PACKAGE_brcmfmac-nvram-43455-sdio=y
+CONFIG_PACKAGE_cypress-firmware-43455-sdio=y
