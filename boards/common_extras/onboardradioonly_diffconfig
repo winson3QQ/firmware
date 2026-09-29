@@ -1,0 +1,33 @@
+# Onboard radios only (openmanet_setup.sh ... -x onboardradioonly)
+#
+# boards/common/openmanet_diffconfig has a "# WIFI" block that force-enables a
+# pile of EXTERNAL wifi cards as =y (iwlwifi ax200/ax210, ath9k, ath10k qca6174,
+# ath11k wcn6855 + pci, mt76/mt7915/mt7916, owl-loader). That is right for the
+# EKH boards, and it is inherited unconditionally by every board because it
+# lives in boards/common.
+#
+# The Pi 3A+ civil SKU (#195) has NO PCIe and exactly ONE USB-A port, which the
+# CM108 PTT adapter occupies in the shipping configuration. None of these cards
+# can physically be attached. Measured cost if left in: ~25 MB installed.
+#
+# KEPT ON PURPOSE (do not add to this list):
+#   kmod-brcmfmac + 43455 nvram/firmware  - the Pi onboard wifi. It must stay =y
+#     and occupy radio0 so morse (HaLow) stays radio1; it is also the onboarding
+#     AP, which on an eth-less 3A+ is the only field entry point. See -x mm6108only.
+#   kmod-mac80211 / MAC80211_MESH / wpad-openssl / kmod-batman-adv - core mesh.
+#
+# CONFIG_PACKAGE_kmod-iwlwifi is not set
+# CONFIG_PACKAGE_iwlwifi-firmware-ax200 is not set
+# CONFIG_PACKAGE_iwlwifi-firmware-ax210 is not set
+# CONFIG_PACKAGE_kmod-owl-loader is not set
+# CONFIG_PACKAGE_kmod-ath11k is not set
+# CONFIG_PACKAGE_kmod-ath11k-pci is not set
+# CONFIG_PACKAGE_ath11k-firmware-wcn6855 is not set
+# CONFIG_PACKAGE_kmod-ath10k is not set
+# CONFIG_PACKAGE_ath10k-firmware-qca6174 is not set
+# CONFIG_PACKAGE_kmod-ath9k is not set
+# CONFIG_PACKAGE_kmod-ath9k-htc is not set
+# CONFIG_PACKAGE_kmod-mt76 is not set
+# CONFIG_PACKAGE_kmod-mt7915e is not set
+# CONFIG_PACKAGE_kmod-mt7915-firmware is not set
+# CONFIG_PACKAGE_kmod-mt7916-firmware is not set
