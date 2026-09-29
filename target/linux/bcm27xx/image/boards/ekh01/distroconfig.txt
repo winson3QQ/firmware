@@ -42,7 +42,22 @@ dtoverlay=uart5
 dtparam=act_led_trigger=none
 
 # adds ramoops device tree overlay
+# Board-conditional (#173 / Batman #203): the reserved-memory reg property must
+# match the SoC's #address-cells. ramoops-pi4 carries a 3-cell reg (64-bit
+# address) which is correct on bcm2711; on bcm2710 the DT expects 2 cells and the
+# node is rejected at boot --
+#   OF: fdt: Reserved memory: invalid reg property in 'ramoops@b000000', skipping node
+# -- leaving the board with no crash black-box at all. The generic ramoops overlay
+# has the 2-cell reg; bench-verified on a Pi 3A+ 2026-09-29 (sysrq crash captured to
+# pstore, dmesg-ramoops-0 contained the pre-panic marker).
+# NB bcm2710 devices reuse this file via IMAGE/sysupgrade := ... | boot-2710 | boot-ekh01.
+[pi4]
 dtoverlay=ramoops-pi4,console-size=0x8000
+[pi3]
+dtoverlay=ramoops,console-size=0x8000
+[pi02]
+dtoverlay=ramoops,console-size=0x8000
+[all]
 
 # automatically load sensor dtoverlays
 camera_auto_detect=1
