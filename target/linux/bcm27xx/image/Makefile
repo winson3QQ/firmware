@@ -37,6 +37,24 @@ define Build/boot-common
 	mcopy -i $@.boot $(DTS_DIR)/overlays/README ::/overlays/
 endef
 
+# Per-device kernel command line additions (Batman #203).
+#
+# boot-common writes ONE shared cmdline.txt for every subtarget and has no
+# per-board seam, unlike its sibling distroconfig.txt (which boot-ekh01
+# overrides with `mcopy -o`). That asymmetry meant a parameter needed by one
+# board could only be added by editing the file shared by all four subtargets.
+#
+# A device opts in by setting DEVICE_CMDLINE_EXTRA and adding `| cmdline-extra`
+# to its IMAGE recipe, after boot-common. Devices that set nothing are
+# byte-for-byte unchanged.
+define Build/cmdline-extra
+	$(if $(DEVICE_CMDLINE_EXTRA),\
+		tr -d '\n' < $@-cmdline.txt > $@-cmdline-extra.txt; \
+		echo ' $(DEVICE_CMDLINE_EXTRA)' >> $@-cmdline-extra.txt; \
+		mcopy -o -i $@.boot $@-cmdline-extra.txt ::cmdline.txt \
+	)
+endef
+
 define Build/boot-2708
 	mcopy -i $@.boot $(KDIR)/bootcode.bin ::
 	mcopy -i $@.boot $(KDIR)/start.elf ::
@@ -280,8 +298,13 @@ define Device/morse_pi3_base
   # Simplify by removing board and OpenWRT version.
   IMAGE_PREFIX = $$(VERSION_DIST_SANITIZED)-$$(IMG_PREFIX_VERCODE)$$(IMG_PREFIX_EXTRA)$$(call sanitize,$$(DEVICE_MODEL)-$$(DEVICE_VARIANT))
   DEVICE_IMG_NAME = $$(IMAGE_PREFIX)-$$(1)-$$(2)
-  IMAGE/sysupgrade.img.gz := boot-common | boot-2710 | boot-ekh01 | sdcard-img | gzip | append-metadata
-  IMAGE/factory.img.gz := boot-common | boot-2710 | boot-ekh01 | sdcard-img | gzip
+  IMAGE/sysupgrade.img.gz := boot-common | boot-2710 | boot-ekh01 | cmdline-extra | sdcard-img | gzip | append-metadata
+  IMAGE/factory.img.gz := boot-common | boot-2710 | boot-ekh01 | cmdline-extra | sdcard-img | gzip
+  # A bad slot must be an OBSERVABLE failure, not a silent dead node: a bare
+  # `rootwait` waits forever, so the watchdog is never armed and the board just
+  # sits dark (docs/field-resilience.md, #133). The A/B card builder already uses
+  # rootwait=20 panic=10; the single-slot image never got it.
+  DEVICE_CMDLINE_EXTRA := rootwait=20 panic=10
 endef
 
 define Device/bcm2711_mm6108-spi
