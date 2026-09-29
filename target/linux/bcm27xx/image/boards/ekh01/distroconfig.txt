@@ -60,6 +60,13 @@ dtparam=act_led_trigger=none
 dtoverlay=ramoops-pi4,console-size=0x8000
 [pi3]
 dtoverlay=ramoops,console-size=0x8000
+# Headless node: reclaim GPU RAM (Batman #195, 512 MB civil tier) - no display,
+# and the camera stack is not built for this board.
+# MUST sit after the [all] block above: config.txt is LAST-WINS, and [all] sets
+# gpu_mem_512=128. An earlier [pi3] override is silently defeated by it - measured
+# on a 3A+ 2026-09-29: with the override placed before [all], vcgencmd still
+# reported arm=448M gpu=64M.
+gpu_mem_512=16
 [pi02]
 dtoverlay=ramoops,console-size=0x8000
 [all]
