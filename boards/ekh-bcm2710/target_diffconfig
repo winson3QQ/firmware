@@ -1,3 +1,11 @@
+# Batman bcm2710 board config — Raspberry Pi 3A+ civil SKU (winson3QQ/Batman#195, #203)
+#
+# Replaces the upstream stock file. Diff vs stock, and why:
+#   - the whole camera/video stack is dropped (see below)
+#   - kmod-of-mdio is dropped (it is an rpi4/lan78xx workaround; bcm2710 has no
+#     on-board ethernet PHY and nothing on this subtarget depends on it)
+# Everything else is kept verbatim.
+
 CONFIG_TARGET_MULTI_PROFILE=y
 CONFIG_TARGET_bcm27xx=y
 CONFIG_TARGET_bcm27xx_bcm2710=y
@@ -13,13 +21,40 @@ CONFIG_PACKAGE_bsp-bcm271x=y
 #CONFIG_MORSE_REGDB_CHANNEL_NEGATIVE_FILTER="1|2|50|51"
 
 CONFIG_TARGET_ROOTFS_PARTSIZE=1024
-
-# Video encode/decode
-CONFIG_PACKAGE_kmod-video-core=y
-CONFIG_PACKAGE_kmod-codec-bcm2835=y
-
-# bug with lan78xx - enabled by default for rpi4 platforms.
-# We enable of-mdio to work around the dependency chain.
-CONFIG_PACKAGE_kmod-of-mdio=y
 # Disable ext4 image creation.
 CONFIG_TARGET_ROOTFS_EXT4FS=n
+
+# ---------------------------------------------------------------- no camera
+# The civil SKU is a headless mesh relay with PTT; it carries no camera, and
+# #68 (node as a generic payload host) does not extend to this tier.
+#
+# This is not only a size decision — it is also a BUILD BLOCKER. The bcm2710
+# kernel config produces VIDEOBUF2_CORE/V4L2/MEMOPS/DMA_CONTIG but NOT
+# CONFIG_VIDEOBUF2_VMALLOC, while OpenWrt's kmod-video-videobuf2 lists
+# videobuf2-vmalloc.ko in its FILES, so a from-scratch kernel build dies with
+#   ERROR: module '.../videobuf2/videobuf2-vmalloc.ko' is missing.
+# (It only surfaces after `make target/linux/clean`; an incremental build reuses
+# the modules from an earlier kernel and hides it. Same class of gap as the
+# missing PSTORE symbols — bcm2710's kernel config is thinner than bcm2711's.)
+# CONFIG_PACKAGE_kmod-video-core is not set
+# CONFIG_PACKAGE_kmod-video-videobuf2 is not set
+# CONFIG_PACKAGE_kmod-video-async is not set
+# CONFIG_PACKAGE_kmod-video-cci is not set
+# CONFIG_PACKAGE_kmod-video-dma-contig is not set
+# CONFIG_PACKAGE_kmod-video-dw9807-vcm is not set
+# CONFIG_PACKAGE_kmod-video-fwnode is not set
+# CONFIG_PACKAGE_kmod-video-mem2mem is not set
+# CONFIG_PACKAGE_kmod-video-imx219 is not set
+# CONFIG_PACKAGE_kmod-video-imx477 is not set
+# CONFIG_PACKAGE_kmod-video-imx708 is not set
+# CONFIG_PACKAGE_kmod-video-ov5647 is not set
+# CONFIG_PACKAGE_kmod-video-uvc is not set
+# CONFIG_PACKAGE_kmod-camera-bcm2835-unicam is not set
+# CONFIG_PACKAGE_kmod-codec-bcm2835 is not set
+# CONFIG_PACKAGE_kmod-vchiq-mmal-bcm2835 is not set
+
+# Device/bcm2710_mm6108-spi hard-codes four sensor drivers in DEVICE_PACKAGES
+# (kmod-video-ov5647/imx219/imx477/imx708). Strip them per-device, the same way
+# ekh-bcm2711 strips the wrong-radio driver and wpad-basic-mbedtls.
+CONFIG_TARGET_DEVICE_PACKAGES_bcm27xx_bcm2710_DEVICE_bcm2710_mm6108-spi="-kmod-video-ov5647 -kmod-video-imx219 -kmod-video-imx477 -kmod-video-imx708"
+CONFIG_TARGET_DEVICE_PACKAGES_bcm27xx_bcm2710_DEVICE_bcm2710_mm6108-sdio="-kmod-video-ov5647 -kmod-video-imx219 -kmod-video-imx477 -kmod-video-imx708"

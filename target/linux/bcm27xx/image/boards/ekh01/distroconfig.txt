@@ -11,6 +11,11 @@ dtoverlay=disable-bt
 [pi3]
 dtoverlay=disable-bt
 dtparam=i2c1=on
+# Pin the core clock (Batman #203 risk 2): on BCM283x the SPI clock is derived
+# from core_freq, and on a Pi 3 core_freq scales down with load - measured at
+# 287.5 MHz while idle on a 3A+, against core_freq=400. A drifting core clock
+# means a drifting MM6108 SPI clock. Verified pinned at 400 MHz after this.
+core_freq_min=400
 [pi4]
 dtoverlay=miniuart-bt
 dtparam=i2c1=on
