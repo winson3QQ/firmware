@@ -1,0 +1,34 @@
+# Drop drivers/tools for hardware the BCM2710 boards do not have
+# (openmanet_setup.sh ... -x bcm2710trim)
+#
+# Pi 3A+ / 3B+ / Zero 2 W: BCM2837, no PCIe bus at all, USB is a single DWC2
+# (USB 2.0 OTG) controller, and there is no on-board ethernet PHY.
+# All of the below are force-enabled as =y by boards/common/kmods_diffconfig or
+# pulled in by common_extras/utils_diffconfig, i.e. inherited unconditionally.
+#
+# no PCIe bus -> lspci and its 1.4 MB id database are dead weight
+# CONFIG_PACKAGE_pciutils is not set
+# CONFIG_PACKAGE_pciids is not set
+#
+# no xHCI silicon (Pi 4 gets USB3 from the VL805 xHCI *on PCIe*; BCM2837 has none)
+# CONFIG_PACKAGE_kmod-usb3 is not set
+# CONFIG_PACKAGE_kmod-usb-xhci-hcd is not set
+#
+# DWC3 is the Synopsys USB *3.x* dual-role IP. No Pi has it (they use DWC2), yet
+# kmod-usb-dwc3 carries AUTOLOAD so it is actually modprobed at boot.
+# Only octeon / ipq40xx / ipq806x / qualcommax packages depend on it.
+# CONFIG_PACKAGE_kmod-usb-dwc3 is not set
+#
+# device-tree MDIO, for an on-board ethernet PHY. Nothing on bcm2710 depends on
+# it (only TARGET_bcm27xx_bcm2708 and friends do conditionally); on bcm2711 it
+# was added to work around a lan78xx dependency bug - a Pi 4 concern.
+# CONFIG_PACKAGE_kmod-of-mdio is not set
+#
+# KEPT ON PURPOSE (do not add):
+#   kmod-libphy  - kmod-usb-net-asix-ax88179 DEPENDS on it, and AX88179 is the
+#                  most common gigabit USB-RJ45 chipset. The bench dongle is the
+#                  first-contact path on an eth-less 3A+; do not gamble on it.
+#   usbutils/usbids - the board HAS USB; lsusb is needed to identify the dongle
+#                  and the CM108 PTT adapter during bring-up.
+#   tailscale    - user decision 2026-09-29: keep, may be needed later (upstream
+#                  BLOS/RoIP path, enabled only on mesh gates by 16_openmanet_roip).
