@@ -1,0 +1,14 @@
+# PTT / voice payload (openmanet_setup.sh ... -x ptt)
+#
+# The civil SKU (Pi 3A+, #195) ships with PTT: a CM108-class USB audio adapter on
+# the single USB-A port. openvlm is the CLI that reads/writes/validates the EEPROM
+# on those adapters, and it installs /etc/hotplug.d/sound/60-openvlm so the ALSA
+# default device follows the adapter as it comes and goes.
+#
+# It is NOT pulled in automatically: bsp-bcm271x DEPENDS on +gpsd but not on
+# openvlm (only bsp-raven does). Without this fragment a board-recipe build has
+# no PTT support at all.
+#
+# openvlm DEPENDS pulls the rest: libevdev, kmod-usb-audio, kmod-usb-hid,
+# libudev-zero, alsa-utils. Whole closure measured at 6.7 MB installed.
+CONFIG_PACKAGE_openvlm=y
