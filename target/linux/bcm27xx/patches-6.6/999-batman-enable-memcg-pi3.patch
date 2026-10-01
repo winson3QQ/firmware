@@ -1,0 +1,28 @@
+From: Batman <yellow.winson@gmail.com>
+Subject: [PATCH] batman: enable the memory cgroup controller on Pi 3A+/3B+ (#209)
+
+Drop cgroup_disable=memory from the bcm2710-rpi-3-b-plus /chosen bootargs (the DTB the
+Pi 3A+ boots) by re-declaring bootargs at the end of the board file. Same reasoning as
+999-batman-enable-memcg.patch for the Pi 4. DTB-only: kernel binary and vermagic unchanged.
+
+Signed-off-by: Batman <yellow.winson@gmail.com>
+---
+--- a/arch/arm/boot/dts/broadcom/bcm2710-rpi-3-b-plus.dts	2026-10-01 23:27:31.041892346 +0800
++++ b/arch/arm/boot/dts/broadcom/bcm2710-rpi-3-b-plus.dts	2026-10-01 23:27:31.046152516 +0800
+@@ -293,3 +293,16 @@
+ 		eth_max_speed = <&eth_phy>,"max-speed:0";
+ 	};
+ };
++
++/*
++ * Batman (#209 S4-6): enable the memory cgroup controller on the Pi 3A+/3B+ so docker can enforce
++ * --memory and batman-autocommit's docker gate can pass. Upstream 950-1349 removed the RPi kernel's
++ * implicit cgroup_disable, so the DT bootargs token (inherited here from bcm271x-rpi-bt.dtsi) is the
++ * only thing turning memcg off. Re-declare /chosen/bootargs at the END of this board file (dtc keeps
++ * the last definition) instead of editing the shared .dtsi, so no other board's DTB changes.
++ */
++/ {
++	chosen {
++		bootargs = "coherent_pool=1M 8250.nr_uarts=1 snd_bcm2835.enable_headphones=0";
++	};
++};
