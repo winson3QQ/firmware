@@ -152,12 +152,22 @@ jobs:
           echo "Target: ${{ inputs.target }}/${{ inputs.subtarget }}" >> artifacts/${{ inputs.board }}/BOARD_INFO.txt
           echo "Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> artifacts/${{ inputs.board }}/BOARD_INFO.txt
 
+      # #209 S4-6: HARD gate (no continue-on-error) — an image without brcmfmac/43455, mm6108 or the
+      # batman packages must not ship (1.4.12 stranded a node after OTA). Only the BUILT manifest counts.
+      - name: Image manifest gate (#209)
+        if: inputs.board == 'ekh-bcm2711' || inputs.board == 'ekh-bcm2710'
+        shell: bash
+        run: |
+          set -eu
+          MAN=$(ls "bin/targets/${{ inputs.target }}/${{ inputs.subtarget }}"/*.manifest | head -1)
+          sh scripts/check-image-manifest.sh "$MAN" "${{ inputs.board }}"
+
       # #89 A/B OTA: repackage the standard image's rootfs+boot into the batman A/B sysupgrade tar
-      # (root.squashfs + boot/ + metadata) that our /lib/upgrade/platform.sh consumes on the GPT A/B
-      # card. Best-effort (continue-on-error): a failure here must never fail the firmware build; the
-      # standard image is still uploaded. Only the A/B card board (ekh-bcm2711) has A/B slots today.
+      # (root.squashfs + boot/ + metadata + SHA256SUMS) that our /lib/upgrade/platform.sh consumes on
+      # the GPT A/B card. Best-effort (continue-on-error): a failure here must never fail the firmware
+      # build; the standard image is still uploaded. A/B cards: Pi 4 (ekh-bcm2711) and Pi 3A+ (ekh-bcm2710, #209).
       - name: Build A/B OTA payload (#89)
-        if: inputs.board == 'ekh-bcm2711'
+        if: inputs.board == 'ekh-bcm2711' || inputs.board == 'ekh-bcm2710'
         continue-on-error: true
         shell: bash
         run: |
@@ -190,6 +200,10 @@ jobs:
           PIN=$(sed -n 's|.*Batman\.git\^\([0-9a-f]\{7,40\}\).*|\1|p' feeds.conf.default | head -1)
           curl -fsSL "https://raw.githubusercontent.com/winson3QQ/Batman/${PIN}/scripts/build-ab-payload.sh" -o build-ab-payload.sh
           chmod +x build-ab-payload.sh
+          # the packer checks Pi 3 firmware against this allow-list (#209 D4); it is not next to a
+          # standalone download, so fetch it from the same pinned commit and pass it explicitly
+          curl -fsSL "https://raw.githubusercontent.com/winson3QQ/Batman/${PIN}/feed/batman-provision/files/usr/share/batman/firmware-allowlist-bcm2710.sha256" -o fw-allowlist.sha256
+          export FW_ALLOWLIST="$PWD/fw-allowlist.sha256"
           # 4) assemble into the upload dir — "Upload build artifacts" (path: artifacts/<board>/*) ships it
           mkdir -p "artifacts/${{ inputs.board }}"
           ./build-ab-payload.sh root.squashfs /mnt/abboot "${{ inputs.board }}" "artifacts/${{ inputs.board }}/ab-payload-${{ inputs.board }}.tar.gz"

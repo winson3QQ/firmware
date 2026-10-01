@@ -1,4 +1,5 @@
 # Batman payload-host: bake the Docker engine closure into the image (#159).
-# Board-gated to bcm2711 via the meta-package DEPENDS (@TARGET_bcm27xx_bcm2711)
-# and via being symlinked only into boards/ekh-bcm2711 (never ekh-bcm2710/Zero 2 W).
+# Pi 4 (bcm2711) and Pi 3A+ (bcm2710, #209 S4-4): batman-payload-host is no longer board-gated to
+# bcm2711. It pulls the OpenTAKServer golden (batman-payload-ots) only on bcm2711 — OTS idles at
+# ~620 MiB and a Pi 3A+ has 512 MB. bcm2710 also needs 999-batman-enable-memcg-pi3.patch (memcg).
 CONFIG_PACKAGE_batman-payload-host=y

@@ -1,25 +1,34 @@
 #!/bin/sh
 # local-ab-tar.sh — after a local (WSL) OpenWrt build, assemble the batman A/B sysupgrade tar
-# for the mm6108-spi board (manet01) from the built whole-disk image, fully rootless.
+# for the mm6108-spi board from the built whole-disk image, fully rootless. Pi 4 (ekh-bcm2711, the
+# default) or Pi 3A+ (ekh-bcm2710, #209).
 #
 # Mirrors the verified CI carve (build-firmware.yml / fast-build.yml): parse the MBR, carve the
 # p2 squashfs by its own bytes_used, extract the p1 boot FAT with mtools (no loop-mount / no root),
 # then hand both to the batman feed's build-ab-payload.sh. The result is a `sysupgrade -n`-able
 # A/B tar dropped next to the images in bin/targets, exactly like the CI artifact.
 #
-#   local-ab-tar.sh [<firmware_top>]
+#   local-ab-tar.sh [<firmware_top>] [<board>]
 #
 # <firmware_top> defaults to $PWD (run it from the firmware tree root, or after `make`).
+# <board> defaults to ekh-bcm2711. Before packing, the built manifest must pass
+# scripts/check-image-manifest.sh (brcmfmac/43455, mm6108, batman packages — the 1.4.12 lesson).
 set -eu
 
 TOP=${1:-$PWD}
-BOARD=ekh-bcm2711
-BT="$TOP/bin/targets/bcm27xx/bcm2711"
+BOARD=${2:-ekh-bcm2711}
+case "$BOARD" in *bcm2711*) SUB=bcm2711 ;; *bcm2710*) SUB=bcm2710 ;; *) echo "unknown board $BOARD" >&2; exit 1 ;; esac
+BT="$TOP/bin/targets/bcm27xx/$SUB"
 PAYLOAD_SH="$TOP/feeds/batman/scripts/build-ab-payload.sh"
 
 [ -d "$BT" ] || { echo "no bin/targets dir: $BT — run a build first" >&2; exit 1; }
 [ -f "$PAYLOAD_SH" ] || { echo "build-ab-payload.sh not found: $PAYLOAD_SH (feed installed?)" >&2; exit 1; }
 command -v mcopy >/dev/null || { echo "mtools/mcopy missing — apt-get install mtools" >&2; exit 1; }
+
+# shellcheck disable=SC2012
+MAN=$(ls "$BT"/*.manifest 2>/dev/null | head -1)
+[ -n "$MAN" ] || { echo "no image manifest in $BT" >&2; exit 1; }
+sh "$TOP/scripts/check-image-manifest.sh" "$MAN" "$BOARD"
 
 # shellcheck disable=SC2012  # ls is fine here: fixed ASCII image names
 IMGGZ=$(ls "$BT"/*mm6108-spi*squashfs-sysupgrade.img.gz 2>/dev/null | head -1)
