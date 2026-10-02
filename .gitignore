@@ -34,3 +34,6 @@ git-src
 .cproject
 .ccache
 .vscode*
+
+# generated at build time by scripts/stamp-batman-build.sh (#209 S5) — never commit
+files/etc/batman-build

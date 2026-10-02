@@ -91,9 +91,37 @@ jobs:
           GIT_TERMINAL_PROMPT=0 git ls-remote git@github.com:OpenMANET/go-alfred.git HEAD
           GIT_TERMINAL_PROMPT=0 git ls-remote ssh://git@github.com/OpenMANET/protobufs.git HEAD
 
+      # #209 S5: a Batman board builds from its committed recipe (boards/<board>/batman-recipe), the
+      # SAME arguments scripts/build-board.sh uses locally — before this, CI built `-b <board>` only,
+      # i.e. a different package set than the images we test on hardware.
       - name: Configure build for ${{ inputs.board }}
+        shell: bash
         run: |
-          ./scripts/openmanet_setup.sh -i -b ${{ inputs.board }}
+          set -eu
+          R="-b ${{ inputs.board }}"
+          if [ -f "boards/${{ inputs.board }}/batman-recipe" ]; then
+            R=$(grep -v '^#' "boards/${{ inputs.board }}/batman-recipe" | tr '\n' ' ')
+          fi
+          echo "openmanet_setup.sh -i $R"
+          # shellcheck disable=SC2086  # the recipe is a word list on purpose
+          ./scripts/openmanet_setup.sh -i $R
+
+      # #209 S5: the generated .config must equal the committed lock, so a feed or recipe change that
+      # alters the package set fails HERE (review the diff, then `build-board.sh <board> --update-lock`).
+      - name: Config lock (#209)
+        if: inputs.board == 'ekh-bcm2711' || inputs.board == 'ekh-bcm2710'
+        shell: bash
+        run: |
+          set -eu
+          diff "boards/${{ inputs.board }}/batman-config.lock" <(grep -E '^CONFIG_|^# CONFIG_.* is not set' .config | sort)
+
+      # #209 S5: /etc/batman-build is generated, never hand-written; an image without it can never be
+      # committed by batman-autocommit (every OTA would revert). Refuses a stale feed checkout.
+      - name: Stamp /etc/batman-build (#209)
+        if: inputs.board == 'ekh-bcm2711' || inputs.board == 'ekh-bcm2710'
+        run: |
+          sh scripts/stamp-batman-build.sh "${{ inputs.board }}"
+          cat files/etc/batman-build
 
       - name: Install package signing key
         if: inputs.releasepackages
@@ -162,13 +190,27 @@ jobs:
           MAN=$(ls "bin/targets/${{ inputs.target }}/${{ inputs.subtarget }}"/*.manifest | head -1)
           sh scripts/check-image-manifest.sh "$MAN" "${{ inputs.board }}"
 
+      # #209 S5: the stamp INSIDE the built rootfs must be the one this job wrote (board + commits).
+      - name: Stamp in rootfs (#209)
+        if: inputs.board == 'ekh-bcm2711' || inputs.board == 'ekh-bcm2710'
+        shell: bash
+        run: |
+          set -eu
+          SQ=$(ls build_dir/target-*/linux-${{ inputs.target }}_${{ inputs.subtarget }}/root.squashfs | head -1)
+          staging_dir/host/bin/unsquashfs4 -cat "$SQ" etc/batman-build > stamp.inimage
+          cmp files/etc/batman-build stamp.inimage
+          grep -qx "BATMAN_BOARD=${{ inputs.board }}" stamp.inimage
+          cat stamp.inimage
+          cp stamp.inimage "artifacts/${{ inputs.board }}/batman-build.txt"
+
       # #89 A/B OTA: repackage the standard image's rootfs+boot into the batman A/B sysupgrade tar
       # (root.squashfs + boot/ + metadata + SHA256SUMS) that our /lib/upgrade/platform.sh consumes on
-      # the GPT A/B card. Best-effort (continue-on-error): a failure here must never fail the firmware
-      # build; the standard image is still uploaded. A/B cards: Pi 4 (ekh-bcm2711) and Pi 3A+ (ekh-bcm2710, #209).
+      # the GPT A/B card. HARD step (#209 S5): for the Batman boards the OTA payload IS the product a
+      # deployed node receives, so a build that cannot produce it is a failed build — before, this was
+      # continue-on-error and a green build could ship no payload.
+      # A/B cards: Pi 4 (ekh-bcm2711) and Pi 3A+ (ekh-bcm2710, #209).
       - name: Build A/B OTA payload (#89)
         if: inputs.board == 'ekh-bcm2711' || inputs.board == 'ekh-bcm2710'
-        continue-on-error: true
         shell: bash
         run: |
           set -eux
