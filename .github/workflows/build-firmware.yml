@@ -196,7 +196,9 @@ jobs:
         shell: bash
         run: |
           set -eu
-          SQ=$(ls build_dir/target-*/linux-${{ inputs.target }}_${{ inputs.subtarget }}/root.squashfs | head -1)
+          # the per-device rootfs the image (and so the OTA payload) carries — scripts/pick-rootfs.sh
+          SQ=$(sh scripts/pick-rootfs.sh "${{ inputs.board }}")
+          echo "rootfs: $SQ"
           staging_dir/host/bin/unsquashfs4 -cat "$SQ" etc/batman-build > stamp.inimage
           cmp files/etc/batman-build stamp.inimage
           grep -qx "BATMAN_BOARD=${{ inputs.board }}" stamp.inimage
@@ -226,13 +228,12 @@ jobs:
           # then require a non-empty .img.
           gunzip -kf "$IMGGZ" 2>/dev/null || true
           [ -s "$IMG" ] || { echo "gunzip produced no image from $IMGGZ"; exit 1; }
-          # MBR partition 2 = rootfs squashfs. start LBA at byte 470 (part-entry-2 +8), LE u32; squashfs
-          # bytes_used at p2off+40, LE u64. Carve exactly bytes_used (a standalone squashfs == its size).
-          P2OFF=$(( $(dd if="$IMG" bs=1 skip=470 count=4 2>/dev/null | od -An -tu4 | tr -d ' ') * 512 ))
-          [ "$(dd if="$IMG" bs=1 skip="$P2OFF" count=4 2>/dev/null)" = hsqs ] || { echo "p2@$P2OFF not squashfs"; exit 1; }
-          SQBYTES=$(dd if="$IMG" bs=1 skip=$((P2OFF+40)) count=8 2>/dev/null | od -An -tu8 | tr -d ' ')
-          dd if="$IMG" of=root.squashfs bs=1M iflag=skip_bytes,count_bytes skip="$P2OFF" count="$SQBYTES" 2>/dev/null
-          echo "carved root.squashfs: $(wc -c < root.squashfs) bytes (expected $SQBYTES)"
+          # rootfs: NOT carved from the image (#209 S5) — a carve from a short .img.gz can cut the
+          # squashfs tail (kernel panic), and the target-generic build_dir rootfs can lack the device's
+          # packages. scripts/pick-rootfs.sh returns the pristine per-device file this image carries;
+          # the same file the local build-board.sh ships, so CI and local payloads cannot differ.
+          cp "$(sh scripts/pick-rootfs.sh "${{ inputs.board }}")" root.squashfs
+          echo "root.squashfs: $(wc -c < root.squashfs) bytes"
           # 2) bootdir = the boot FAT (p1) of the same image (ro loop-mount; vfat lookups are
           #    case-insensitive, so build-ab-payload.sh finds KERNEL8.IMG etc via its lowercase names).
           LOOP=$(sudo losetup -Pf --show "$IMG")

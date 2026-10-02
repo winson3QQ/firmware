@@ -58,10 +58,13 @@ PY
 )"
 echo "carve: boot p1 @${P1OFF} (${P1LEN}B), squashfs p2 @${P2OFF} (${SQBYTES}B)"
 
-# rootfs: exact bytes_used carve (deterministic, not filename-dependent)
-dd if="$T/disk.img" of="$T/root.squashfs" bs=1M iflag=skip_bytes,count_bytes \
-   skip="$P2OFF" count="$SQBYTES" status=none
-[ "$(head -c4 "$T/root.squashfs")" = hsqs ] || { echo "carved squashfs bad magic" >&2; exit 1; }
+# rootfs: NOT carved from the image any more (#209 S5) — the pristine per-device squashfs that this
+# image carries, identified by scripts/pick-rootfs.sh (see its header: a carve can be truncated, and
+# the target-generic build_dir rootfs can lack the device's packages). Card and OTA use the same file.
+ROOTSQ=$(cd "$TOP" && sh scripts/pick-rootfs.sh "$BOARD")
+cp "$TOP/$ROOTSQ" "$T/root.squashfs"
+echo "rootfs: $ROOTSQ ($(wc -c < "$T/root.squashfs") B; image p2 header says $SQBYTES B)"
+[ "$(wc -c < "$T/root.squashfs")" = "$SQBYTES" ] || { echo "pristine rootfs size differs from the image's p2 bytes_used" >&2; exit 1; }
 
 # boot: carve the FAT partition and extract rootless with mtools
 dd if="$T/disk.img" of="$T/boot.fat" bs=1M iflag=skip_bytes,count_bytes \
@@ -75,6 +78,10 @@ find "$T/bootdir" -depth -mindepth 1 | while IFS= read -r p; do
     d=$(dirname "$p"); b=$(basename "$p"); lb=$(printf '%s' "$b" | tr '[:upper:]' '[:lower:]')
     [ "$b" = "$lb" ] || mv "$p" "$d/$lb"
 done
+
+# BOOTDIR_OUT=<dir>: also leave the extracted boot files there, so build-board.sh --card builds the card
+# from exactly these files (no second extraction, no SRC_IMG loop-mount of a possibly short image).
+if [ -n "${BOOTDIR_OUT:-}" ]; then rm -rf "$BOOTDIR_OUT"; mkdir -p "$BOOTDIR_OUT"; cp -a "$T/bootdir/." "$BOOTDIR_OUT/"; fi
 
 OUT="$BT/ab-payload-$BOARD.tar.gz"
 sh "$PAYLOAD_SH" "$T/root.squashfs" "$T/bootdir" "$BOARD" "$OUT"
