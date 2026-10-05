@@ -1,0 +1,186 @@
+From: Batman <noreply@batman.invalid>
+Subject: [PATCH] mm6108-driver: never read a STA rate table outside mrc.lock (#245)
+
+Adds feeds/openmanet/morse-micro/mm6108-driver/patches/022-rc-guard-sta-rate-table.patch. See winson3QQ/Batman#245.
+
+--- a/feeds/openmanet/morse-micro/mm6108-driver/patches/022-rc-guard-sta-rate-table.patch
++++ b/feeds/openmanet/morse-micro/mm6108-driver/patches/022-rc-guard-sta-rate-table.patch
+@@ -0,0 +1,178 @@
++From: Batman <noreply@batman.invalid>
++Subject: [PATCH] rc: never read a STA's rate table outside mrc.lock (#245)
++
++msta->rc.tb exists only between morse_rc_sta_add() (ASSOC) and
++morse_rc_sta_remove() (frees it under mrc.lock), but the multicast rate
++control paths and the nl80211/expected-throughput ops read it with no
++lock and, in three places, no NULL check. A mesh peer that rejoins is a
++mac80211 STA before it is associated, so a TX status for a frame to it
++dereferences tb == NULL in morse_rc_sta_feedback_rates() ->
++mmrc_sta_get_best_rate() and the node oopses (read at 0x6 = best_tp).
++
++Add morse_rc_sta_get_best_rate(), which copies best_tp under mrc.lock
++and reports whether the STA has a table, and use it at every such reader.
++
++diff -u -r a/mac.c b/mac.c
++--- a/mac.c	2026-10-05 12:07:40.858936846 +0800
+++++ b/mac.c	2026-10-05 12:07:40.862905654 +0800
++@@ -5783,15 +5783,15 @@
++ {
++ 	struct morse_sta *msta = (struct morse_sta *)sta->drv_priv;
++ 	struct morse *mors = hw->priv;
++-	const struct mmrc_table *tb = msta->rc.tb;
++ 	struct mmrc_rate rate;
++ 
++-	if (!tb || tb->best_tp.rate == MMRC_MCS_UNUSED) {
+++	/* #245: tb can be freed concurrently; read it under mrc.lock */
+++	if (!morse_rc_sta_get_best_rate(mors, msta, &rate) ||
+++	    rate.rate == MMRC_MCS_UNUSED) {
++ 		sinfo->filled &= ~BIT_ULL(NL80211_STA_INFO_TX_BITRATE);
++ 		return;
++ 	}
++ 
++-	rate = tb->best_tp;
++ 	sinfo->txrate.mcs = rate.rate;
++ 	sinfo->txrate.nss = NSS_IDX_TO_NSS(rate.ss);
++ 	sinfo->txrate.flags = (RATE_INFO_FLAGS_VHT_MCS);
++@@ -5824,14 +5824,14 @@
++ {
++ 	struct morse_sta *msta = (struct morse_sta *)sta->drv_priv;
++ 	struct morse *mors = hw->priv;
++-	const struct mmrc_table *tb = msta->rc.tb;
++ 	struct mmrc_rate rate;
++ 	u32 tput;
++ 
++-	if (!tb || tb->best_tp.rate == MMRC_MCS_UNUSED)
+++	/* #245: tb can be freed concurrently; read it under mrc.lock */
+++	if (!morse_rc_sta_get_best_rate(mors, msta, &rate) ||
+++	    rate.rate == MMRC_MCS_UNUSED)
++ 		return 0;
++ 
++-	rate = tb->best_tp;
++ 	tput = BPS_TO_KBPS(mmrc_calculate_theoretical_throughput(rate));
++ 	morse_dbg(FEATURE_ID_RATECONTROL, mors,
++ 		"%s: Throughput: MCS: %d, BW: %d, GI: %d -> %u\n",
++diff -u -r a/rc.c b/rc.c
++--- a/rc.c	2026-10-05 12:07:40.858936846 +0800
+++++ b/rc.c	2026-10-05 12:07:40.862905654 +0800
++@@ -403,6 +403,33 @@
++ 	spin_unlock_bh(&mors->mrc.lock);
++ }
++ 
+++/**
+++ * morse_rc_sta_get_best_rate() - Read a STA's best-throughput rate safely
+++ *
+++ * msta->rc.tb only exists from morse_rc_sta_add() (STA reaches ASSOC) until
+++ * morse_rc_sta_remove(), which frees it under mrc.lock. The mac80211 STA lives
+++ * longer than that: a mesh peer that has just reappeared is a STA while it is
+++ * still peering, and frames queued to a departing peer complete after its
+++ * table is gone. Reading tb directly in that window dereferences NULL (or freed
+++ * memory), so every reader outside mrc.lock must go through here.
+++ *
+++ * Return: true and *rate filled when the STA has a rate table, false otherwise.
+++ */
+++bool morse_rc_sta_get_best_rate(struct morse *mors, struct morse_sta *msta,
+++				struct mmrc_rate *rate)
+++{
+++	bool found = false;
+++
+++	spin_lock_bh(&mors->mrc.lock);
+++	if (msta->rc.tb) {
+++		*rate = mmrc_sta_get_best_rate(msta->rc.tb);
+++		found = true;
+++	}
+++	spin_unlock_bh(&mors->mrc.lock);
+++
+++	return found;
+++}
+++
++ static void morse_rc_sta_fill_basic_rates(struct morse_skb_tx_info *tx_info,
++ 					  struct ieee80211_tx_info *info, int tx_bw)
++ {
++@@ -450,6 +477,7 @@
++ }
++ 
++ struct lowest_mcast_rate_iter {
+++	struct morse *mors;
++ 	const struct ieee80211_vif *on_vif;
++ 	bool is_set;
++ 	u32 throughput;
++@@ -471,7 +499,12 @@
++ 	if (msta->vif != iter_data->on_vif)
++ 		return;
++ 
++-	rate = mmrc_sta_get_best_rate(msta->rc.tb);
+++	/* A STA without a rate table (not yet associated, or being removed) cannot
+++	 * constrain the multicast rate.
+++	 */
+++	if (!morse_rc_sta_get_best_rate(iter_data->mors, msta, &rate))
+++		return;
+++
++ 	throughput = mmrc_calculate_theoretical_throughput(rate);
++ 
++ 	if (!iter_data->is_set || iter_data->throughput > throughput) {
++@@ -484,6 +517,7 @@
++ void morse_rc_vif_update_mcast_rate(struct morse *mors, struct morse_vif *mors_vif)
++ {
++ 	struct lowest_mcast_rate_iter data = {
+++		.mors = mors,
++ 		.is_set = false,
++ 		.on_vif = morse_vif_to_ieee80211_vif(mors_vif),
++ 	};
++@@ -680,6 +714,8 @@
++ 		goto exit;
++ 
++ 	if (msta) {
+++		struct mmrc_rate best_rate;
+++
++ 		/* Save the rate information. This will be used to update station's tx rate stats */
++ 		msta->last_sta_tx_rate.bw = rates.rates[0].bw;
++ 		msta->last_sta_tx_rate.rate = rates.rates[0].rate;
++@@ -687,11 +723,11 @@
++ 		msta->last_sta_tx_rate.guard = rates.rates[0].guard;
++ 
++ 		/* Check if the new rate is lowest rate used */
++-		if (mors_vif->enable_multicast_rate_control) {
+++		/* #245: tb is NULL while a (re)joining mesh peer is still peering */
+++		if (mors_vif->enable_multicast_rate_control &&
+++		    morse_rc_sta_get_best_rate(mors, msta, &best_rate)) {
++ 			u32 best_rate_tp;
++-			struct mmrc_rate best_rate;
++ 
++-			best_rate = mmrc_sta_get_best_rate(msta->rc.tb);
++ 			best_rate_tp = mmrc_calculate_theoretical_throughput(best_rate);
++ 
++ 			if (!mors_vif->mcast_tx_rate_throughput ||
++@@ -771,13 +807,14 @@
++ 			morse_rc_set_fixed_rate(mors, sta, fixed_mcs, fixed_bw, fixed_ss,
++ 						fixed_guard);
++ 
++-		if (mors_vif->enable_multicast_rate_control) {
+++		/* Read tb under mrc.lock like every reader outside the RC list walk */
+++		if (mors_vif->enable_multicast_rate_control &&
+++		    morse_rc_sta_get_best_rate(mors, msta, &best_rate)) {
++ 			u32 best_tp;
++ 
++ 			/* Check if new STA supports multicast rate. If the new STA is the first one
++ 			 * to join the network then update vif multicast rate to STA's best rate.
++ 			 */
++-			best_rate = mmrc_sta_get_best_rate(msta->rc.tb);
++ 			best_tp = mmrc_calculate_theoretical_throughput(best_rate);
++ 
++ 			if (mors_vif->mcast_tx_rate_throughput > best_tp ||
++diff -u -r a/rc.h b/rc.h
++--- a/rc.h	2026-10-05 12:07:40.858936846 +0800
+++++ b/rc.h	2026-10-05 12:07:40.858936846 +0800
++@@ -52,6 +52,12 @@
++ 
++ void morse_rc_sta_remove(struct morse *mors, struct ieee80211_sta *sta);
++ 
+++/* morse.h includes rc.h before it defines struct morse_sta */
+++struct morse_sta;
+++
+++bool morse_rc_sta_get_best_rate(struct morse *mors, struct morse_sta *msta,
+++				struct mmrc_rate *rate);
+++
++ void morse_rc_sta_fill_tx_rates(struct morse *mors,
++ 				struct morse_skb_tx_info *tx_info,
++ 				struct sk_buff *skb,
