@@ -106,6 +106,14 @@ jobs:
           # shellcheck disable=SC2086  # the recipe is a word list on purpose
           ./scripts/openmanet_setup.sh -i $R
 
+      # #247: batman-adv/batctl must come from the routing openwrt-24.10 pin at the expected versions
+      # (same gate as build-board.sh step 2), before anything is compiled.
+      - name: batman-adv source gate (#247)
+        if: inputs.board == 'ekh-bcm2711' || inputs.board == 'ekh-bcm2710'
+        run: |
+          sh scripts/check-feed-pins.sh
+          sh scripts/check-batman-adv-source.sh
+
       # #209 S5: the generated .config must equal the committed lock, so a feed or recipe change that
       # alters the package set fails HERE (review the diff, then `build-board.sh <board> --update-lock`).
       - name: Config lock (#209)
