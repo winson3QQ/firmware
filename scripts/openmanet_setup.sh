@@ -247,6 +247,15 @@ if [ "${INITIALIZE}" ]; then
     done
     #patch packages if necessary and re-create index files
     patch_feeds_packages "${BOARD:-}"
+    # Batman #252: one set of golang build rules for every Go package. The installed `golang` is
+    # OpenMANET's multi-version meta package (go-$(GO_DEFAULT_VERSION) in staging_dir/hostpkg/lib, no
+    # unversioned `go`); its rules (= upstream openwrt-25.12's) put that go on PATH. The packages feed's
+    # 24.10 rules do not, so runc/containerd/dockerd/docker silently built with the host's system go
+    # (1.22.2, EOL). Copy the rules over (the feeds were just reset, so this is deterministic);
+    # scripts/check-golang-rules.sh holds the same file list and verifies it.
+    for f in golang-package.mk golang-values.mk golang-compiler.mk golang-host-build.mk golang-build.sh go-gcc-helper go-strip-helper; do
+        cp -p "feeds/openmanet/lang/golang/$f" "feeds/packages/lang/golang/$f" || { echo "ERROR: cannot sync golang rule $f" >&2; exit 1; }
+    done
     ./scripts/feeds update -i
     ./scripts/feeds install -p openmanet -a
     ./scripts/feeds install -a
