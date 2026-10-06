@@ -140,11 +140,17 @@ patch_feeds_packages(){
     echo "Applying patches from: $PATCHES_DIR"
 
     # Iterate over all patch files in the board-specific patches directory
+    # Batman #247: a failed patch stops setup. It used to be ignored and "All patches applied
+    # successfully" printed anyway (1.5.1-wsl.1 shipped without patch 022 that way). The feeds are
+    # reset to their pins first (-i block below), so every patch must apply cleanly.
     for patch_file in "$PATCHES_DIR"/*.patch; do
         if [ -e "$patch_file" ]; then
             echo "Applying patch: $patch_file"
             if patch -N -p1 < "$patch_file"; then
                 echo "Patch applied successfully."
+            else
+                echo "ERROR: patch $patch_file failed" >&2
+                exit 1
             fi
         fi
     done
@@ -219,8 +225,21 @@ if [ "${INITIALIZE}" ]; then
     # slate to keep -i idempotent from any prior tree state.
     ./scripts/feeds uninstall -a
     ./scripts/feeds update -a
+    # Batman #247: "feeds update" leaves a pinned feed's working tree alone, so the board patches of an
+    # earlier -i (possibly for the OTHER board — one tree builds both) were still there and got applied
+    # a second time (a new-file patch is appended twice). Reset every feed checkout to its pinned commit
+    # first. feeds/batman is ours and never patched here; leave a developer's local edits there alone
+    # (stamp-batman-build.sh marks such a build DIRTY).
+    for d in feeds/*/; do
+        d=${d%/}
+        [ -d "$d/.git" ] && [ "$d" != feeds/batman ] || continue
+        git -C "$d" checkout -q -- . && git -C "$d" clean -fdq || { echo "ERROR: cannot reset $d" >&2; exit 1; }
+    done
+    rm -f feeds/.batman-patched-board
     #patch packages if necessary and re-create index files
     patch_feeds_packages "${BOARD:-}"
+    # which board's patches the feeds now carry: build-board.sh re-runs -i when it is not the board it builds
+    echo "${BOARD:-none}" > feeds/.batman-patched-board
     ./scripts/feeds update -i
     ./scripts/feeds install -p openmanet -a
     ./scripts/feeds install -a

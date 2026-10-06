@@ -72,6 +72,10 @@ if [ "$CARD_ONLY" = 0 ]; then
 	INIT=()
 	if STALE=$(sh scripts/check-feed-pins.sh); then echo "all pinned feeds at their pins"
 	else echo "$STALE"; echo "-> feeds update (-i)"; INIT=(-i); fi
+	# the feeds carry ONE board's patches (patches/<board>/, applied by -i); building the other board
+	# on them would silently mix boards — re-init when they are not this board's (#247)
+	PB=$(cat feeds/.batman-patched-board 2>/dev/null || echo unknown)
+	[ "$PB" = "$BOARD" ] || { echo "feeds carry patches for '$PB', not $BOARD -> feeds update (-i)"; INIT=(-i); }
 	./scripts/openmanet_setup.sh "${INIT[@]}" "${RECIPE[@]}" > "logs/setup-$BOARD.log" 2>&1 || { tail -30 "logs/setup-$BOARD.log"; exit 1; }
 	sh scripts/check-feed-pins.sh >&2 || { echo "feeds still not at their pins after setup" >&2; exit 1; }
 	sh scripts/check-batman-adv-source.sh
