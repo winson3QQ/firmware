@@ -3,6 +3,7 @@
 # CONFIG_ALL_NONSHARED is not set
 # CONFIG_ATH10K_THERMAL is not set
 # CONFIG_BATMAN_ADV_DEBUG is not set
+# CONFIG_BATMAN_ADV_NC is not set
 # CONFIG_BATMAN_ADV_TRACING is not set
 # CONFIG_BTRFS_PROGS_ZSTD is not set
 # CONFIG_BUILDBOT is not set

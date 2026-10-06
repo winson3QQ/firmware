@@ -16,7 +16,8 @@
 #
 # Steps (each one stops on failure):
 #   1 recipe     boards/<board>/batman-recipe = the openmanet_setup.sh arguments (CI reads it too)
-#   2 setup      openmanet_setup.sh (+ -i when feeds/batman is not the pinned commit)
+#   2 setup      openmanet_setup.sh (+ -i when any pinned feed is not at its pin: check-feed-pins.sh),
+#                then check-batman-adv-source.sh (batman-adv/batctl feed + version, #247)
 #   3 lock       normalised .config must equal boards/<board>/batman-config.lock
 #   4 stamp      scripts/stamp-batman-build.sh -> files/etc/batman-build, saved as logs/stamp-<board>.txt
 #                (both boards share files/; the per-board copy is what later steps compare against)
@@ -67,11 +68,17 @@ if [ "$CARD_ONLY" = 0 ]; then
 	echo "openmanet_setup.sh ${RECIPE[*]}"
 
 	say "2 setup"
-	PIN=$(sed -n 's|^src-git batman [^^]*\^\([0-9a-f]\{7,40\}\).*|\1|p' feeds.conf.default | head -1)
-	HEAD_FEED=$(git -C feeds/batman rev-parse HEAD 2>/dev/null || echo none)
+	# every pinned feed, not just batman (#247: a routing-only pin bump must also re-init the feeds)
 	INIT=()
-	case "$HEAD_FEED" in "$PIN"*) echo "feeds/batman at the pin ${PIN:0:7}" ;; *) echo "feeds/batman is $HEAD_FEED, pin is $PIN -> feeds update (-i)"; INIT=(-i) ;; esac
+	if STALE=$(sh scripts/check-feed-pins.sh); then echo "all pinned feeds at their pins"
+	else echo "$STALE"; echo "-> feeds update (-i)"; INIT=(-i); fi
+	# the feeds carry ONE board's patches (patches/<board>/, applied by -i); building the other board
+	# on them would silently mix boards — re-init when they are not this board's (#247)
+	PB=$(cat feeds/.batman-patched-board 2>/dev/null || echo unknown)
+	[ "$PB" = "$BOARD" ] || { echo "feeds carry patches for '$PB', not $BOARD -> feeds update (-i)"; INIT=(-i); }
 	./scripts/openmanet_setup.sh "${INIT[@]}" "${RECIPE[@]}" > "logs/setup-$BOARD.log" 2>&1 || { tail -30 "logs/setup-$BOARD.log"; exit 1; }
+	sh scripts/check-feed-pins.sh >&2 || { echo "feeds still not at their pins after setup" >&2; exit 1; }
+	sh scripts/check-batman-adv-source.sh
 
 	say "3 config lock"
 	LOCK=boards/$BOARD/batman-config.lock

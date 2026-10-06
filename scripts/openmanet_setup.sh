@@ -140,11 +140,20 @@ patch_feeds_packages(){
     echo "Applying patches from: $PATCHES_DIR"
 
     # Iterate over all patch files in the board-specific patches directory
+    # Batman #247: a failed patch stops setup. It used to be ignored and "All patches applied
+    # successfully" printed anyway (1.5.1-wsl.1 shipped without patch 022 that way). The feeds are
+    # reset to their pins first (-i block below), so every patch must apply cleanly — which also means
+    # a patch upstream has since absorbed must be deleted, not left to be "skipped" (0005-golang, 2026-10-06).
+    # patches/<board>/ must only touch feeds/: the reset covers feeds/, not the firmware tree itself, so a
+    # patch of package/ or target/ would be "previously applied" on the second -i and stop setup.
     for patch_file in "$PATCHES_DIR"/*.patch; do
         if [ -e "$patch_file" ]; then
             echo "Applying patch: $patch_file"
             if patch -N -p1 < "$patch_file"; then
                 echo "Patch applied successfully."
+            else
+                echo "ERROR: patch $patch_file failed" >&2
+                exit 1
             fi
         fi
     done
@@ -215,17 +224,42 @@ if [ -z "$MODE" ] && [ -z "$INITIALIZE" ]; then
 fi
 
 if [ "${INITIALIZE}" ]; then
+    # Batman #247: the marker says which board's patches the feeds carry; build-board.sh re-runs -i
+    # when it is not the board being built. Drop it FIRST, so an -i that dies anywhere below (reset,
+    # patch, install, Ctrl-C) forces the next build to re-init instead of trusting half-reset feeds.
+    rm -f feeds/.batman-patched-board
     # feeds install never removes existing symlinks, so start from a clean
     # slate to keep -i idempotent from any prior tree state.
     ./scripts/feeds uninstall -a
     ./scripts/feeds update -a
+    # Batman #247: "feeds update" leaves a pinned feed's working tree alone, so the board patches of an
+    # earlier -i (possibly for the OTHER board — one tree builds both) were still there and got applied
+    # a second time (a new-file patch is appended twice). Reset every feed checkout to its commit first
+    # (reset --hard: staged leftovers too; a HEAD moved off the pin is caught by check-feed-pins.sh).
+    # Untracked files go (clean -fd); ignored files stay (luci builds host tools in-tree), except the
+    # .rej/.orig leftovers of earlier patch runs. feeds/batman is ours and never patched here: leave a
+    # developer's local edits there alone (stamp-batman-build.sh marks such a build DIRTY).
+    for d in feeds/*/; do
+        d=${d%/}
+        [ -d "$d/.git" ] && [ "$d" != feeds/batman ] || continue
+        { git -C "$d" reset -q --hard && git -C "$d" clean -fdq && git -C "$d" clean -fqX -- '*.rej' '*.orig'; } \
+            || { echo "ERROR: cannot reset $d" >&2; exit 1; }
+    done
     #patch packages if necessary and re-create index files
     patch_feeds_packages "${BOARD:-}"
     ./scripts/feeds update -i
     ./scripts/feeds install -p openmanet -a
     ./scripts/feeds install -a
+    # Batman #247: batman-adv/batctl come from the routing feed (openwrt-24.10 maintenance line,
+    # 2024.3 + 101/77 backports), not OpenMANET's 2025.4. "install -f" is a no-op for a package
+    # another feed already installed, so uninstall first. scripts/check-batman-adv-source.sh
+    # (build-board.sh step 2) refuses the build if this did not take.
+    ./scripts/feeds uninstall batman-adv batctl
+    ./scripts/feeds install -p routing batman-adv batctl
 
     ./scripts/feeds install -f -p morse iwinfo
+    # -i completed: the feeds now carry exactly this board's patches (#247)
+    echo "${BOARD:-none}" > feeds/.batman-patched-board
 fi
 
 case "${MODE}" in
