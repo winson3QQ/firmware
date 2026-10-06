@@ -31,6 +31,8 @@ case "$FEED" in "$PIN"*) ;; *)
 	echo "       Re-run openmanet_setup.sh with -i (scripts/build-board.sh does this when needed)." >&2
 	exit 1 ;;
 esac
+STALE=$(sh scripts/check-feed-pins.sh) || {
+	echo "stamp: pinned feeds are stale (#247) — re-run openmanet_setup.sh with -i:" >&2; echo "$STALE" >&2; exit 1; }
 FW=$(git rev-parse HEAD)
 
 DIRTY=0; why=""

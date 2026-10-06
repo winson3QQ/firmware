@@ -1,2 +1,5 @@
 # Batman: bake the provisioning/config-survival/observability package into the image (#88/#89/#108)
 CONFIG_PACKAGE_batman-provision=y
+# #247: batman-adv from routing openwrt-24.10 still has network coding; OpenMANET uci sets
+# network_coding=1, which the 24.10 proto script would apply. Keep it compiled out.
+# CONFIG_BATMAN_ADV_NC is not set

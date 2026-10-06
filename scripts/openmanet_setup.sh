@@ -224,6 +224,12 @@ if [ "${INITIALIZE}" ]; then
     ./scripts/feeds update -i
     ./scripts/feeds install -p openmanet -a
     ./scripts/feeds install -a
+    # Batman #247: batman-adv/batctl come from the routing feed (openwrt-24.10 maintenance line,
+    # 2024.3 + 101/77 backports), not OpenMANET's 2025.4. "install -f" is a no-op for a package
+    # another feed already installed, so uninstall first. scripts/check-batman-adv-source.sh
+    # (build-board.sh step 2) refuses the build if this did not take.
+    ./scripts/feeds uninstall batman-adv batctl
+    ./scripts/feeds install -p routing batman-adv batctl
 
     ./scripts/feeds install -f -p morse iwinfo
 fi
