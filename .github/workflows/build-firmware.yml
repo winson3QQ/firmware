@@ -113,6 +113,7 @@ jobs:
         run: |
           sh scripts/check-feed-pins.sh
           sh scripts/check-batman-adv-source.sh
+          sh scripts/check-golang-rules.sh   # #252: packages feed uses the OpenMANET golang rules
 
       # #209 S5: the generated .config must equal the committed lock, so a feed or recipe change that
       # alters the package set fails HERE (review the diff, then `build-board.sh <board> --update-lock`).
@@ -197,6 +198,8 @@ jobs:
           set -eu
           MAN=$(ls "bin/targets/${{ inputs.target }}/${{ inputs.subtarget }}"/*.manifest | head -1)
           sh scripts/check-image-manifest.sh "$MAN" "${{ inputs.board }}"
+          # #252: every Go program in the rootfs built by the tree's own Go (not the runner's apt go)
+          sh scripts/check-go-toolchain.sh "$(ls -d build_dir/target-*/root-${{ inputs.target }} | head -1)"
 
       # #209 S5: the stamp INSIDE the built rootfs must be the one this job wrote (board + commits).
       - name: Stamp in rootfs (#209)

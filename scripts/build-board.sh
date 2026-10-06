@@ -17,12 +17,15 @@
 # Steps (each one stops on failure):
 #   1 recipe     boards/<board>/batman-recipe = the openmanet_setup.sh arguments (CI reads it too)
 #   2 setup      openmanet_setup.sh (+ -i when any pinned feed is not at its pin: check-feed-pins.sh),
-#                then check-batman-adv-source.sh (batman-adv/batctl feed + version, #247)
+#                then check-batman-adv-source.sh (batman-adv/batctl feed + version, #247) and
+#                check-golang-rules.sh (packages feed uses the OpenMANET golang rules, #252)
 #   3 lock       normalised .config must equal boards/<board>/batman-config.lock
 #   4 stamp      scripts/stamp-batman-build.sh -> files/etc/batman-build, saved as logs/stamp-<board>.txt
 #                (both boards share files/; the per-board copy is what later steps compare against)
-#   5 make       (a failed parallel make is retried -j1 V=s: OpenWrt has parallel-build races)
-#   6 manifest   scripts/check-image-manifest.sh (brcmfmac/43455, mm6108, OTS rule per SoC)
+#   5 make       (a failed parallel make is retried -j1 V=s: OpenWrt has parallel-build races); the Go
+#                packages are cleaned first when the golang rules or the staged Go changed (#252)
+#   6 manifest   scripts/check-image-manifest.sh (brcmfmac/43455, mm6108, OTS rule per SoC), then
+#                check-go-toolchain.sh: every Go binary in the rootfs built by the tree's own Go (#252)
 #   7 rootfs     scripts/pick-rootfs.sh: the pristine per-device squashfs the image carries; its stamp
 #                must equal step 4's and its DISTRIB_TARGET this board's SoC. Card AND payload use it.
 #   8 payload    scripts/local-ab-tar.sh -> the sysupgrade A/B payload (+ boot files kept for the card)
@@ -76,9 +79,12 @@ if [ "$CARD_ONLY" = 0 ]; then
 	# on them would silently mix boards — re-init when they are not this board's (#247)
 	PB=$(cat feeds/.batman-patched-board 2>/dev/null || echo unknown)
 	[ "$PB" = "$BOARD" ] || { echo "feeds carry patches for '$PB', not $BOARD -> feeds update (-i)"; INIT=(-i); }
+	# #252: the packages feed must carry the OpenMANET golang rules (synced by -i)
+	sh scripts/check-golang-rules.sh >/dev/null || { echo "packages-feed golang rules are not OpenMANET's -> feeds update (-i)"; INIT=(-i); }
 	./scripts/openmanet_setup.sh "${INIT[@]}" "${RECIPE[@]}" > "logs/setup-$BOARD.log" 2>&1 || { tail -30 "logs/setup-$BOARD.log"; exit 1; }
 	sh scripts/check-feed-pins.sh >&2 || { echo "feeds still not at their pins after setup" >&2; exit 1; }
 	sh scripts/check-batman-adv-source.sh
+	sh scripts/check-golang-rules.sh >&2 || { echo "golang rules still not synced after setup" >&2; exit 1; }
 
 	say "3 config lock"
 	LOCK=boards/$BOARD/batman-config.lock
@@ -98,6 +104,23 @@ if [ "$CARD_ONLY" = 0 ]; then
 	cp files/etc/batman-build "$STAMP"
 
 	say "5 make -j$JOBS"
+	# #252: OpenWrt's rebuild check hashes only a package's own directory, not the golang rules it
+	# includes nor the Go it runs — so after the rules or the staged Go change, the Go packages would be
+	# reused as-is (still built by the old Go). Clean every selected Go package whenever that changes.
+	GOV=$(sed -n 's/^GO_DEFAULT_VERSION:=//p' feeds/openmanet/lang/golang/golang-values.mk | head -1)
+	GOSTAMP=logs/go-rules-$BOARD.stamp
+	GOSUM=$( { cat feeds/packages/lang/golang/golang-*.mk feeds/openmanet/lang/golang/golang-*.mk; echo "go-$GOV"; head -1 "staging_dir/hostpkg/lib/go-$GOV/VERSION" 2>/dev/null; } | sha256sum | cut -c1-16)
+	if [ "$(cat "$GOSTAMP" 2>/dev/null)" != "$GOSUM" ]; then
+		GOPKGS=""
+		for d in package/feeds/*/*; do
+			p=${d##*/}; case "$p" in golang*) continue ;; esac
+			grep -qs 'golang-package.mk' "$(readlink -f "$d")/Makefile" || continue
+			grep -qE "^CONFIG_PACKAGE_$p=[ym]$" .config && GOPKGS="$GOPKGS $p"
+		done
+		echo "golang rules / staged Go changed -> cleaning Go packages:$GOPKGS"
+		for p in $GOPKGS; do make "package/$p/clean" > "logs/goclean-$BOARD-$p.log" 2>&1 || { tail -20 "logs/goclean-$BOARD-$p.log" >&2; exit 1; }; done
+		echo "$GOSUM" > "$GOSTAMP.pending"
+	fi
 	if ! make -j"$JOBS" > "logs/build-$BOARD.log" 2>&1; then
 		echo "make failed — retrying -j1 V=s (parallel-build races happen; logs/build-$BOARD-v.log)" >&2
 		make -j1 V=s > "logs/build-$BOARD-v.log" 2>&1 || { tail -40 "logs/build-$BOARD-v.log" >&2; exit 1; }
@@ -106,6 +129,10 @@ if [ "$CARD_ONLY" = 0 ]; then
 	say "6 manifest gate"
 	MAN=$(ls "$BT"/*.manifest | head -1)
 	sh scripts/check-image-manifest.sh "$MAN" "$BOARD"
+	# #252: every Go program in the image built by the tree's own Go
+	CPU=$([ "$SOC" = bcm2711 ] && echo a72 || echo a53)
+	sh scripts/check-go-toolchain.sh "build_dir/target-aarch64_cortex-${CPU}_musl/root-bcm27xx"
+	[ ! -f "logs/go-rules-$BOARD.stamp.pending" ] || mv "logs/go-rules-$BOARD.stamp.pending" "logs/go-rules-$BOARD.stamp"
 fi
 
 [ -f "$STAMP" ] || { echo "no $STAMP — build this board first (without --card-only)" >&2; exit 1; }
