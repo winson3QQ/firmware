@@ -26,10 +26,11 @@ if grep -q '^batman-payload-host ' "$MAN"; then
 	[ "$soc" = bcm2710 ] && forbid="$forbid batman-payload-ots"
 fi
 
-# Exact versions of the mesh core (#247): routing openwrt-24.10 batman-adv/batctl, OpenMANET alfred.
+# Exact versions of the mesh core (#247): routing openwrt-24.10 batman-adv/batctl, OpenMANET alfred;
+# and runc 1.3.6 (#247-2: container-escape CVEs fixed in >= 1.3.3 / 1.3.6).
 # Exact, not "contains 2024.3": routing master's 2024.3-r7 (11 patches) must not pass for -r13 (101).
 # Bump together with the routing pin / kernel version (the kmod version carries the kernel's).
-exact="kmod-batman-adv=6.6.138.2024.3-r13 batctl-full=2024.3-r5 alfred=2025.5-r1"
+exact="kmod-batman-adv=6.6.138.2024.3-r13 batctl-full=2024.3-r5 alfred=2025.5-r1 runc=1.3.6-r1"
 
 bad=0
 for e in $exact; do
