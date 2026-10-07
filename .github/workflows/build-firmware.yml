@@ -106,6 +106,11 @@ jobs:
           # shellcheck disable=SC2086  # the recipe is a word list on purpose
           ./scripts/openmanet_setup.sh -i $R
 
+      # #275: every patches/<board>/*.patch must actually be applied in feeds/ (same gate as
+      # build-board.sh) — a board patch that silently did not apply shipped rc2 without the #263 fix.
+      - name: Board patch gate (#275)
+        run: sh scripts/check-board-patches.sh "${{ inputs.board }}"
+
       # #247: batman-adv/batctl must come from the routing openwrt-24.10 pin at the expected versions
       # (same gate as build-board.sh step 2), before anything is compiled.
       - name: batman-adv source gate (#247)
@@ -215,6 +220,11 @@ jobs:
           grep -qx "BATMAN_BOARD=${{ inputs.board }}" stamp.inimage
           cat stamp.inimage
           cp stamp.inimage "artifacts/${{ inputs.board }}/batman-build.txt"
+          # #275: every board patch visible in the rootfs (its Batman-Witness), not only applied in feeds/
+          staging_dir/host/bin/unsquashfs4 -q -no-xattrs -f -d witness-root "$SQ" >/dev/null 2>&1 || true
+          cmp witness-root/etc/batman-patch-witness <(sh scripts/patch-witness.sh list "${{ inputs.board }}")
+          sh scripts/patch-witness.sh check "${{ inputs.board }}" witness-root             "$(ls "bin/targets/${{ inputs.target }}/${{ inputs.subtarget }}"/*.manifest | head -1)"
+          rm -rf witness-root
 
       # #89 A/B OTA: repackage the standard image's rootfs+boot into the batman A/B sysupgrade tar
       # (root.squashfs + boot/ + metadata + SHA256SUMS) that our /lib/upgrade/platform.sh consumes on

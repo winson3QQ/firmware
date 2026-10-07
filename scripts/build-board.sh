@@ -28,6 +28,7 @@
 #                check-go-toolchain.sh: every Go binary in the rootfs built by the tree's own Go (#252)
 #   7 rootfs     scripts/pick-rootfs.sh: the pristine per-device squashfs the image carries; its stamp
 #                must equal step 4's and its DISTRIB_TARGET this board's SoC. Card AND payload use it.
+#                Every board patch's Batman-Witness must hold in it (scripts/patch-witness.sh, #275).
 #   8 payload    scripts/local-ab-tar.sh -> the sysupgrade A/B payload (+ boot files kept for the card)
 #   9 card       (--card-only, root) feeds/batman/scripts/build-ab-image.sh + tests/ab-card-invariants.sh
 #  10 out        $OUT_ROOT/<version>/<board>/ with SHA256SUMS
@@ -71,18 +72,34 @@ if [ "$CARD_ONLY" = 0 ]; then
 	echo "openmanet_setup.sh ${RECIPE[*]}"
 
 	say "2 setup"
+	# #275: -i resets feeds/ only. A patch of ANOTHER board that edits the base tree (halowlink2/ht-hd01-v2/venice
+	# patch package/ and target/) stays applied and would ship inside this board's image — the gate checks only
+	# this board's patches, the lock only .config, and DIRTY was a warning. Refuse instead.
+	BASE="package target include toolchain tools config rules.mk Makefile"
+	# shellcheck disable=SC2086  # word list on purpose
+	if ! git diff --quiet HEAD -- $BASE || [ -n "$(git ls-files --others --exclude-standard -- $BASE | head -1)" ]; then
+		git status --short -- $BASE | head -20 >&2
+		if [ "${BATMAN_ALLOW_DIRTY_BASE:-0}" = 1 ]; then echo "!!! base tree modified (BATMAN_ALLOW_DIRTY_BASE=1) — test build only" >&2
+		else echo "the base tree is modified (another board's patch, or a local edit) — refusing to build (#275)." >&2
+			echo "restore it (git checkout -- <paths>; git clean) or set BATMAN_ALLOW_DIRTY_BASE=1 for a deliberate test build" >&2; exit 1; fi
+	fi
 	# every pinned feed, not just batman (#247: a routing-only pin bump must also re-init the feeds)
 	INIT=()
 	if STALE=$(sh scripts/check-feed-pins.sh); then echo "all pinned feeds at their pins"
 	else echo "$STALE"; echo "-> feeds update (-i)"; INIT=(-i); fi
 	# the feeds carry ONE board's patches (patches/<board>/, applied by -i); building the other board
 	# on them would silently mix boards — re-init when they are not this board's (#247)
+	# #275: and also when THIS board's patch set changed (a patch added, edited or removed): the marker records
+	# "<board> <digest of patches/<board>/>" — a board-only check let 1.5.5-wsl.2 (Pi 4) ship without 0011.
 	PB=$(cat feeds/.batman-patched-board 2>/dev/null || echo unknown)
-	[ "$PB" = "$BOARD" ] || { echo "feeds carry patches for '$PB', not $BOARD -> feeds update (-i)"; INIT=(-i); }
+	WANT="$BOARD $(sh scripts/board-patch-digest.sh "$BOARD")"
+	[ "$PB" = "$WANT" ] || { echo "feeds carry patches '$PB', want '$WANT' -> feeds update (-i)"; INIT=(-i); }
 	# #252: the packages feed must carry the OpenMANET golang rules (synced by -i)
 	sh scripts/check-golang-rules.sh >/dev/null || { echo "packages-feed golang rules are not OpenMANET's -> feeds update (-i)"; INIT=(-i); }
 	./scripts/openmanet_setup.sh "${INIT[@]}" "${RECIPE[@]}" > "logs/setup-$BOARD.log" 2>&1 || { tail -30 "logs/setup-$BOARD.log"; exit 1; }
 	sh scripts/check-feed-pins.sh >&2 || { echo "feeds still not at their pins after setup" >&2; exit 1; }
+	# #275 safety net, independent of the trigger above: every board patch must actually be applied
+	sh scripts/check-board-patches.sh "$BOARD" || { echo "board patches not applied in feeds/ — refusing to build" >&2; exit 1; }
 	sh scripts/check-batman-adv-source.sh
 	sh scripts/check-golang-rules.sh >&2 || { echo "golang rules still not synced after setup" >&2; exit 1; }
 
@@ -147,6 +164,11 @@ cmp -s "$STAMP" "logs/stamp-$BOARD.inimage" || { echo "the rootfs carries a diff
 T=$("$US" -cat "$ROOTSQ" etc/openwrt_release 2>/dev/null | sed -n "s/^DISTRIB_TARGET='*[^/]*\/\([^']*\)'*$/\1/p")
 [ "$T" = "$SUB" ] || { echo "rootfs DISTRIB_TARGET is '$T', board wants $SUB" >&2; exit 1; }
 echo "stamp in rootfs == $STAMP ($VER), DISTRIB_TARGET=$T"
+# #275: every board patch must be visible in THIS rootfs (its Batman-Witness), not only applied in feeds/
+WR=$(mktemp -d); "$US" -q -no-xattrs -f -d "$WR/r" "$ROOTSQ" >/dev/null 2>&1 || true
+cmp -s "$WR/r/etc/batman-patch-witness" <(sh scripts/patch-witness.sh list "$BOARD") 	|| { echo "the rootfs /etc/batman-patch-witness is not this tree's (stale build?)" >&2; rm -rf "$WR"; exit 1; }
+sh scripts/patch-witness.sh check "$BOARD" "$WR/r" "$(ls "$BT"/*.manifest | head -1)" || { rm -rf "$WR"; exit 1; }
+rm -rf "$WR"
 
 if [ "$CARD_ONLY" = 0 ]; then
 	say "8 A/B payload"

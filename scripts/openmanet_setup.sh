@@ -228,6 +228,10 @@ if [ "${INITIALIZE}" ]; then
     # when it is not the board being built. Drop it FIRST, so an -i that dies anywhere below (reset,
     # patch, install, Ctrl-C) forces the next build to re-init instead of trusting half-reset feeds.
     rm -f feeds/.batman-patched-board
+    # Batman #275: the marker also records WHICH patch set was applied (content digest of patches/<board>/),
+    # so build-board.sh re-inits when a board patch is added, changed or removed. Computed here, BEFORE the
+    # patches are applied, so a patch dir edited while -i runs can never be recorded as applied.
+    PATCH_DIGEST=$(sh scripts/board-patch-digest.sh "${BOARD:-none}")
     # feeds install never removes existing symlinks, so start from a clean
     # slate to keep -i idempotent from any prior tree state.
     ./scripts/feeds uninstall -a
@@ -268,7 +272,7 @@ if [ "${INITIALIZE}" ]; then
 
     ./scripts/feeds install -f -p morse iwinfo
     # -i completed: the feeds now carry exactly this board's patches (#247)
-    echo "${BOARD:-none}" > feeds/.batman-patched-board
+    echo "${BOARD:-none} ${PATCH_DIGEST}" > feeds/.batman-patched-board
 fi
 
 case "${MODE}" in

@@ -11,6 +11,12 @@ on:
     - 'package/kernel/**'
     - 'target/linux/ramips/**'
     - 'feeds.conf.default'
+    - 'patches/halowlink2/**'
+    - 'scripts/openmanet_setup.sh'
+    - 'scripts/check-board-patches.sh'
+    - 'scripts/board-patch-digest.sh'
+    - 'scripts/patch-witness.sh'
+    - 'scripts/stamp-batman-build.sh'
 
 jobs:
   build-halowlink2:

@@ -18,6 +18,7 @@ Build-tested: x86/64-glibc
 Run-tested: x86/64-glibc
 
 Signed-off-by: Lyall Beveridge <lyall.beveridge@morsemicro.com>
+Batman-Witness: none iperf3 is not in the ekh images (batman-config.lock: CONFIG_PACKAGE_iperf3 is not set)
 ---
  net/iperf3/Makefile                     |  6 +++---
  net/iperf3/patches/010-y2k.patch        | 21 ---------------------

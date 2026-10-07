@@ -3,6 +3,7 @@ Subject: [PATCH] mm6108-driver: never read a STA rate table outside mrc.lock (#2
 
 Adds feeds/openmanet/morse-micro/mm6108-driver/patches/022-rc-guard-sta-rate-table.patch. See winson3QQ/Batman#245.
 
+Batman-Witness: file lib/modules/*/mm6108_sdio.ko morse_rc_sta_get_best_rate
 --- a/feeds/openmanet/morse-micro/mm6108-driver/patches/022-rc-guard-sta-rate-table.patch
 +++ b/feeds/openmanet/morse-micro/mm6108-driver/patches/022-rc-guard-sta-rate-table.patch
 @@ -0,0 +1,178 @@
