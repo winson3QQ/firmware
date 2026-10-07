@@ -220,6 +220,11 @@ jobs:
           grep -qx "BATMAN_BOARD=${{ inputs.board }}" stamp.inimage
           cat stamp.inimage
           cp stamp.inimage "artifacts/${{ inputs.board }}/batman-build.txt"
+          # #275: every board patch visible in the rootfs (its Batman-Witness), not only applied in feeds/
+          staging_dir/host/bin/unsquashfs4 -q -no-xattrs -f -d witness-root "$SQ" >/dev/null 2>&1 || true
+          cmp witness-root/etc/batman-patch-witness <(sh scripts/patch-witness.sh list "${{ inputs.board }}")
+          sh scripts/patch-witness.sh check "${{ inputs.board }}" witness-root             "$(ls "bin/targets/${{ inputs.target }}/${{ inputs.subtarget }}"/*.manifest | head -1)"
+          rm -rf witness-root
 
       # #89 A/B OTA: repackage the standard image's rootfs+boot into the batman A/B sysupgrade tar
       # (root.squashfs + boot/ + metadata + SHA256SUMS) that our /lib/upgrade/platform.sh consumes on

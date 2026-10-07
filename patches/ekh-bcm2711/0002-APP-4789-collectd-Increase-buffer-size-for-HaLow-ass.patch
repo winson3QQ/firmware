@@ -3,6 +3,7 @@ From: Evan Benn <evan.benn@morsemicro.com>
 Date: Mon, 19 May 2025 15:58:54 +1000
 Subject: [PATCH] APP-4789: collectd: Increase buffer size for HaLow assoclist
 
+Batman-Witness: none buffer-size change only (IWINFO_ASSOCLIST_BUFSIZE); collectd iwinfo.so carries no string or version for it
 ---
  ...Use-IWINFO_ASSOCLIST_BUFSIZE-for-buf.patch | 40 +++++++++++++++++++
  1 file changed, 40 insertions(+)

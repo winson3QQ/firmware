@@ -9,6 +9,7 @@ Add support for videoparsersbad by patching gst1-plugins-bad.
 
 Approved-by: Milad Mohtashamirad
 Approved-by: James Haggerty
+Batman-Witness: none gst1-plugins-bad (videoparsersbad) is not in the ekh images: batman-config.lock selects no gst1 package
 ---
  multimedia/gst1-plugins-bad/Makefile | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
