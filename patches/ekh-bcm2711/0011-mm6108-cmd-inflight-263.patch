@@ -1,0 +1,416 @@
+From: Batman <noreply@batman.invalid>
+Subject: [PATCH] mm6108-driver: route command responses via cmd_inflight; TX path owns sent command skbs (#263)
+
+Adds feeds/openmanet/morse-micro/mm6108-driver/patches/023-cmd-inflight-263.patch. See winson3QQ/Batman#263.
+
+--- a/feeds/openmanet/morse-micro/mm6108-driver/patches/023-cmd-inflight-263.patch
++++ b/feeds/openmanet/morse-micro/mm6108-driver/patches/023-cmd-inflight-263.patch
+@@ -0,0 +1,408 @@
++From: Batman <noreply@batman.invalid>
++Subject: [PATCH] command: route responses via cmd_inflight; TX path owns sent command skbs (#263)
++
++A command that timed out while its skb was still with the TX path made
++__skbq_cmd_finish() guess the skb's list from queue lengths. It unlinked
++an skb from the wrong list (skbq vs pending), corrupting both counters
++(pending.qlen underflowed to 0xffffffff), and later unlinked an skb the
++TX path had already freed: Oops, write to 0x8 in __skb_unlink (shown as
++morse_mac_get_mcs_mask+0x4c; lr morse_skbq_skb_finish), seen 3x on the
++fleet after "SPI transfer timed out" + "Late response for timed out req".
++The response path also copied a late response into the resp buffer of a
++caller that had already returned (stale dest_resp in the skb cb), and it
++read the result from the head of pending, not the caller's own command.
++
++- struct morse gets cmd_inflight {valid, delivered, message_id, host_id,
++  length, dest, ret}, guarded by cmd_lock. morse_cmd_tx sets it for the
++  whole call (retries included) and clears it before returning; nothing
++  can write to the caller's buffer after that.
++- morse_cmd_resp_process matches the response against cmd_inflight only
++  and never touches the command queue or its skbs.
++- morse_skbq_tx_complete frees command skbs once sent (no tx_status is
++  reported for them); they never go on mq->pending.
++- __skbq_cmd_finish removes the skb only if it is still on mq->skbq (by
++  pointer, under mq->lock); otherwise the TX path owns it.
++- A response that races the timeout, or arrives between tries, is used
++  instead of being dropped (and no needless retry is sent).
++- The cmd purge sites WARN if pending is ever non-empty; a read-only
++  module param cmd_timeout_in_flight counts command tries that timed out
++  while the TX path still owned the skb (the race, now survived).
++- __morse_skbq_unlink refuses (WARN_ONCE) an skb that is not linked or a
++  queue that is empty, instead of corrupting memory. O(1), no list walk.
++
++Reproduced deterministically on a Pi4 (debug-only fault injection: hold a
++morse_cli stats command 800 ms after its page write, then 700 ms after
++tx_complete): unpatched -> pending.qlen 0xffffffff and the field Oops
++(write to 0x8 in __morse_skbq_unlink, Comm morse_cli) on the first
++command; patched -> no WARN/Oops over 7 injected commands, responses that
++race the timeout are delivered, 20/20 normal commands afterwards.
++
++See winson3QQ/Batman#263.
++
++diff --git command.c command.c
++index 7e53632..22d5e74 100644
++--- a/command.c
+++++ b/command.c
++@@ -55,17 +55,18 @@ enum morse_interface_type {
++ 	MORSE_INTERFACE_TYPE_MAX = INT_MAX,
++ };
++ 
++-struct morse_cmd_resp_cb {
++-	int ret;
++-	u32 length;
++-	struct morse_cmd_resp *dest_resp;
++-};
++-
++ /* Set driver to chip command timeout: max to wait (in ms) before failing the command */
++ static u32 default_cmd_timeout_ms __read_mostly = MM_CMD_DEFAULT_TIMEOUT_MS;
++ module_param(default_cmd_timeout_ms, uint, 0644);
++ MODULE_PARM_DESC(default_cmd_timeout_ms, "Default command timeout (in ms)");
++ 
+++/* #263 observability: tries that timed out while the TX path still owned the command skb (the
+++ * condition that used to corrupt the command queue). Non-zero = the race happened and was survived.
+++ */
+++static uint cmd_timeout_in_flight;
+++module_param(cmd_timeout_in_flight, uint, 0444);
+++MODULE_PARM_DESC(cmd_timeout_in_flight, "Command tries that timed out while the TX path owned the skb (#263)");
+++
++ /* Enable additional probe request on beacons indicating a dozing AP */
++ static const bool enable_probe_on_doze_beacon = true;
++ 
++@@ -138,11 +139,8 @@ static int morse_cmd_tx(struct morse *mors, struct morse_cmd_resp *resp,
++ 	unsigned long wait_ret = 0;
++ 	struct sk_buff *skb;
++ 	struct morse_skbq *cmd_q = mors->cfg->ops->skbq_cmd_tc_q(mors);
++-	struct morse_cmd_resp_cb *resp_cb;
++ 	DECLARE_COMPLETION_ONSTACK(cmd_comp);
++ 
++-	BUILD_BUG_ON(sizeof(struct morse_cmd_resp_cb) > IEEE80211_TX_INFO_DRIVER_DATA_SIZE);
++-
++ 	if (!cmd_q)
++ 		/* No control pageset, not supported by FW */
++ 		return -ENODEV;
++@@ -169,6 +167,11 @@ static int morse_cmd_tx(struct morse *mors, struct morse_cmd_resp *resp,
++ 		mors->cmd_seq = 1;
++ 	host_id = mors->cmd_seq << MORSE_CMD_HOST_ID_SEQ_SHIFT;
++ 
+++	/*
+++	 * #263: the response is routed through mors->cmd_inflight (under cmd_lock), not through the
+++	 * command skb. Once morse_skbq_skb_tx() has queued the skb it belongs to the TX path, which
+++	 * frees it after sending; we only remove it ourselves if it is still on cmd_q->skbq.
+++	 */
++ 	do {
++ 		req->hdr.host_id = cpu_to_le16(host_id | retry);
++ 
++@@ -179,21 +182,34 @@ static int morse_cmd_tx(struct morse *mors, struct morse_cmd_resp *resp,
++ 		}
++ 
++ 		memcpy(skb->data, req, cmd_len);
++-		resp_cb = (struct morse_cmd_resp_cb *)IEEE80211_SKB_CB(skb)->driver_data;
++-		resp_cb->ret = -EFAULT;
++-		resp_cb->length = length;
++-		resp_cb->dest_resp = resp;
++ 
++ 		MORSE_DBG(mors, "CMD 0x%04x:%04x\n", le16_to_cpu(req->hdr.message_id),
++ 			  le16_to_cpu(req->hdr.host_id));
++ 
++ 		mutex_lock(&mors->cmd_lock);
+++		if (retry == 0) {
+++			mors->cmd_inflight.valid = true;
+++			mors->cmd_inflight.delivered = false;
+++			mors->cmd_inflight.message_id = le16_to_cpu(req->hdr.message_id);
+++			mors->cmd_inflight.length = length;
+++			mors->cmd_inflight.dest = resp;
+++			mors->cmd_inflight.ret = -EFAULT;
+++		} else if (mors->cmd_inflight.delivered) {
+++			/* the previous try's response arrived between tries: no retry needed */
+++			ret = (length && resp) ? le32_to_cpu(resp->status) : mors->cmd_inflight.ret;
+++			mutex_unlock(&mors->cmd_lock);
+++			dev_kfree_skb(skb);
+++			break;
+++		}
+++		mors->cmd_inflight.host_id = host_id | retry;
++ 		mors->cmd_comp = &cmd_comp;
++ 		if (retry > 0)
++ 			reinit_completion(&cmd_comp);
++ 		timeout = timeout ? timeout : default_cmd_timeout_ms;
++ 		morse_skbq_set_mac80211_owned(skb, false);
++ 		ret = morse_skbq_skb_tx(cmd_q, &skb, NULL, MORSE_SKB_CHAN_COMMAND);
+++		if (ret)
+++			mors->cmd_comp = NULL;
++ 		mutex_unlock(&mors->cmd_lock);
++ 
++ 		if (ret) {
++@@ -205,13 +221,14 @@ static int morse_cmd_tx(struct morse *mors, struct morse_cmd_resp *resp,
++ 		mutex_lock(&mors->cmd_lock);
++ 		mors->cmd_comp = NULL;
++ 
++-		if (!wait_ret) {
+++		/* a response that won the race with the timeout still counts */
+++		if (!wait_ret && !mors->cmd_inflight.delivered) {
++ 			MORSE_INFO(mors, "Try:%d Command %04x:%04x timeout after %u ms\n",
++ 				   retry, le16_to_cpu(req->hdr.message_id),
++ 				   le16_to_cpu(req->hdr.host_id), timeout);
++ 			ret = -ETIMEDOUT;
++ 		} else {
++-			ret = (length && resp) ? le32_to_cpu(resp->status) : resp_cb->ret;
+++			ret = (length && resp) ? le32_to_cpu(resp->status) : mors->cmd_inflight.ret;
++ 
++ 			MORSE_DBG(mors, "Command 0x%04x:%04x status 0x%08x\n",
++ 				  le16_to_cpu(req->hdr.message_id),
++@@ -221,14 +238,22 @@ static int morse_cmd_tx(struct morse *mors, struct morse_cmd_resp *resp,
++ 					  le16_to_cpu(req->hdr.message_id),
++ 					  le16_to_cpu(req->hdr.host_id), ret);
++ 		}
++-		/* Free the command request */
+++		/* Free the command request if the TX path has not taken it yet */
++ 		spin_lock_bh(&cmd_q->lock);
++-		morse_skbq_skb_finish(cmd_q, skb, NULL);
+++		if (morse_skbq_skb_finish(cmd_q, skb, NULL) == -ENOENT && ret == -ETIMEDOUT)
+++			cmd_timeout_in_flight++;	/* the #263 race: survived */
++ 		spin_unlock_bh(&cmd_q->lock);
++ 		mutex_unlock(&mors->cmd_lock);
++ 
++ 		retry++;
++ 	} while ((ret == -ETIMEDOUT) && retry < MM_MAX_COMMAND_RETRY);
+++
+++	/* nothing may be written to resp after we return */
+++	mutex_lock(&mors->cmd_lock);
+++	mors->cmd_inflight.valid = false;
+++	mors->cmd_inflight.dest = NULL;
+++	mors->cmd_inflight.length = 0;
+++	mutex_unlock(&mors->cmd_lock);
++ 	mutex_unlock(&mors->cmd_wait);
++ 
++ 	morse_ps_wakers_dec(mors);
++@@ -648,17 +673,11 @@ static int morse_cmd_drv(struct morse *mors,
++ int morse_cmd_resp_process(struct morse *mors, struct sk_buff *skb)
++ {
++ 	int length, ret = -ESRCH;	/* No such process */
++-	struct morse_skbq *cmd_q = mors->cfg->ops->skbq_cmd_tc_q(mors);
++ 	struct morse_cmd_resp *src_resp = (struct morse_cmd_resp *)(skb->data);
++-	struct sk_buff *cmd_skb = NULL;
++-	struct morse_cmd_resp_cb *resp_cb;
++-	struct morse_cmd_resp *dest_resp;
++-	struct morse_cmd_req *req;
++ 	u16 message_id = 0;
++ 	u16 host_id = 0;
++ 	u16 resp_message_id = le16_to_cpu(src_resp->hdr.message_id);
++ 	u16 resp_host_id = le16_to_cpu(src_resp->hdr.host_id);
++-	bool is_late_response = false;
++ 
++ 	MORSE_DBG(mors, "EVT 0x%04x:0x%04x\n", resp_message_id, resp_host_id);
++ 
++@@ -669,28 +688,24 @@ int morse_cmd_resp_process(struct morse *mors, struct sk_buff *skb)
++ 
++ 	mutex_lock(&mors->cmd_lock);
++ 
++-	cmd_skb = morse_skbq_tx_pending(cmd_q);
++-	if (cmd_skb) {
++-		morse_skb_remove_hdr_after_sent_to_chip(cmd_skb);
++-		req = (struct morse_cmd_req *)cmd_skb->data;
++-		message_id = le16_to_cpu(req->hdr.message_id);
++-		host_id = le16_to_cpu(req->hdr.host_id);
++-	}
++-
++ 	/*
++-	 * If there is no pending command or the sequence ID does not match, this is a late response
++-	 * for a timed out command which has been cleaned up, so just free up the response.
+++	 * #263: match against the command a caller is waiting on (mors->cmd_inflight), never against
+++	 * the command skb — the TX path owns and frees that. If nobody is waiting for this command
+++	 * (it was given up and the caller has returned), its buffers are gone: only free the response.
++ 	 * If a command was retried, the response may be from the retry or from the original
++-	 * command (late response) but not from both because the firmware will silently drop
++-	 * a retry if it received the initial request. So a mismatched retry counter is treated
++-	 * as a matched command and response.
+++	 * command but not from both because the firmware will silently drop a retry if it received
+++	 * the initial request. So a mismatched retry counter is treated as a matched command.
++ 	 */
++-	if (!cmd_skb || message_id != resp_message_id ||
+++	if (mors->cmd_inflight.valid) {
+++		message_id = mors->cmd_inflight.message_id;
+++		host_id = mors->cmd_inflight.host_id;
+++	}
+++	if (!mors->cmd_inflight.valid || mors->cmd_inflight.delivered ||
+++	    message_id != resp_message_id ||
++ 	    (host_id & MORSE_CMD_HOST_ID_SEQ_MASK) != (resp_host_id & MORSE_CMD_HOST_ID_SEQ_MASK)) {
++ 		MORSE_ERR(mors,
++ 			  "Late response for timed out req 0x%04x:%04x have 0x%04x:%04x 0x%04x\n",
++ 			  resp_message_id, resp_host_id, message_id, host_id, mors->cmd_seq);
++-		is_late_response = true;
++ 		goto exit;
++ 	}
++ 	if ((host_id & MORSE_CMD_HOST_ID_RETRY_MASK) !=
++@@ -698,27 +713,23 @@ int morse_cmd_resp_process(struct morse *mors, struct sk_buff *skb)
++ 		MORSE_INFO(mors, "Command retry mismatch 0x%04x:%04x 0x%04x:%04x\n",
++ 			   message_id, host_id, resp_message_id, resp_host_id);
++ 
++-	resp_cb = (struct morse_cmd_resp_cb *)IEEE80211_SKB_CB(cmd_skb)->driver_data;
++-	length = resp_cb->length;
++-	dest_resp = resp_cb->dest_resp;
++-	if (length >= sizeof(struct morse_cmd_resp) && dest_resp) {
+++	length = mors->cmd_inflight.length;
+++	if (length >= sizeof(struct morse_cmd_resp) && mors->cmd_inflight.dest) {
++ 		ret = 0;
++ 		length = min_t(int, length, le16_to_cpu(src_resp->hdr.len) +
++ 			       sizeof(struct morse_cmd_header));
++-		memcpy(dest_resp, src_resp, length);
+++		memcpy(mors->cmd_inflight.dest, src_resp, length);
++ 	} else {
++ 		ret = le32_to_cpu(src_resp->status);
++ 	}
++ 
++-	resp_cb->ret = ret;
+++	mors->cmd_inflight.ret = ret;
+++	mors->cmd_inflight.delivered = true;
+++	/* Complete if the caller is still waiting (else it sees 'delivered') */
+++	if (mors->cmd_comp)
+++		complete(mors->cmd_comp);
++ 
++ exit:
++-	if (cmd_skb && !is_late_response) {
++-		/* Complete if not already timed out */
++-		if (mors->cmd_comp)
++-			complete(mors->cmd_comp);
++-	}
++-
++ 	mutex_unlock(&mors->cmd_lock);
++ exit_free:
++ 	dev_kfree_skb(skb);
++diff --git morse.h morse.h
++index 6b41851..b3cbcba 100644
++--- a/morse.h
+++++ b/morse.h
++@@ -1191,6 +1191,19 @@ struct morse {
++ 	struct mutex cmd_lock;
++ 	/* Allow only one command at a time */
++ 	struct mutex cmd_wait;
+++	/*
+++	 * The one command in flight (morse_cmd_tx), guarded by cmd_lock. Responses are routed by
+++	 * this, never by the command skb: once handed to the TX path the skb belongs to it.
+++	 */
+++	struct {
+++		bool valid;		/* a caller is inside morse_cmd_tx for this command */
+++		bool delivered;		/* its response arrived (possibly between tries) */
+++		u16 message_id;
+++		u16 host_id;		/* seq | retry of the current try */
+++		u32 length;		/* size of dest, 0 = status only */
+++		struct morse_cmd_resp *dest;
+++		int ret;
+++	} cmd_inflight;
++ 
++ 	/** User-initiated coredump complete signal mechanism */
++ 	struct completion *user_coredump_comp;
++diff --git pageset.c pageset.c
++index e5775d9..7c287a1 100644
++--- a/pageset.c
+++++ b/pageset.c
++@@ -681,7 +681,8 @@ static int morse_pageset_tx(struct morse_pageset *pageset, enum morse_skb_channe
++ 	__skb_queue_head_init(&skbq_failed);
++ 
++ 	if (channel == MORSE_SKB_CHAN_COMMAND) {
++-		/* Purge timed-out commands (this should not happen) */
+++		/* #263: commands never go on pending any more (freed in tx_complete) */
+++		WARN_ON_ONCE(!skb_queue_empty(&mq->pending));
++ 		morse_skbq_purge(mq, &mq->pending);
++ 	} else if (channel == MORSE_SKB_CHAN_MGMT && n_to_tx) {
++ 		/* Purge old mgmt frames that have not been sent due to congestion */
++diff --git skbq.c skbq.c
++index 845dfae..e88b16c 100644
++--- a/skbq.c
+++++ b/skbq.c
++@@ -260,6 +260,16 @@ static void morse_flush_txskb(struct morse *mors, struct sk_buff *skb)
++ static void __morse_skbq_unlink(struct morse_skbq *mq, struct sk_buff_head *queue,
++ 				struct sk_buff *skb)
++ {
+++	/*
+++	 * #263: O(1) sanity check (hot path, no list walk): the skb must be linked and the queue
+++	 * non-empty. Unlinking an unlinked skb writes through NULL; unlinking from an empty queue
+++	 * underflows qlen. Either means a caller has the wrong list — refuse rather than corrupt.
+++	 */
+++	if (WARN_ONCE(!queue->qlen || !skb->next || !skb->prev ||
+++		      skb->next->prev != skb || skb->prev->next != skb,
+++		      "morse: unlink of an skb that is not on this queue (qlen %u)\n", queue->qlen))
+++		return;
+++
++ 	/* Keep track of the size of the Tx queue, but not the pending queue */
++ 	if (queue == &mq->skbq) {
++ 		MORSE_WARN_ON(FEATURE_ID_SKB, skb->len > mq->skbq_size);
++@@ -983,6 +993,12 @@ int morse_skbq_tx_complete(struct morse_skbq *mq, struct sk_buff_head *skbq)
++ 		case MORSE_SKB_CHAN_LOOPBACK:
++ 			dev_kfree_skb_any(pfirst);
++ 			break;
+++		case MORSE_SKB_CHAN_COMMAND:
+++			/* #263: the response is routed via mors->cmd_inflight, not this skb, and
+++			 * the firmware sends no tx_status for commands: done with it once sent.
+++			 */
+++			dev_kfree_skb_any(pfirst);
+++			break;
++ 		case MORSE_SKB_CHAN_WIPHY:
++ 			if (!(mors->firmware_flags & MORSE_FW_FLAGS_SUPPORT_FULLMAC_REPORT)) {
++ 				dev_kfree_skb_any(pfirst);
++@@ -1113,24 +1129,33 @@ static void __skbq_qosnullfunc_to_nullfunc(struct sk_buff *skb)
++ 	}
++ }
++ 
++-/* Remove commands from pending (or skbq if not sent) */
+++/*
+++ * Remove a command the caller is done with, if it was never handed to the chip.
+++ *
+++ * #263: the TX path owns a command skb from the moment it dequeues it (it is sent and freed in
+++ * morse_skbq_tx_complete(), or freed on a failed write) — it never goes onto mq->pending. So the
+++ * skb is either still on mq->skbq (not sent yet: unlink and free it here) or no longer ours, in
+++ * which case it may already be freed and must not be dereferenced. Membership is decided by
+++ * pointer comparison against the list under mq->lock, never by queue lengths: guessing from
+++ * qlen unlinked skbs from the wrong list, corrupted both counters (pending.qlen underflowed to
+++ * 0xffffffff) and finally unlinked a freed skb (NULL+8 write in __skb_unlink).
+++ */
++ static int __skbq_cmd_finish(struct morse_skbq *mq, struct sk_buff *skb)
++ {
++ 	struct morse *mors = mq->mors;
++-
++-	if (mq->pending.qlen > 0) {
++-		__morse_skbq_unlink(mq, &mq->pending, skb);
++-		dev_kfree_skb(skb);
++-	} else if (mq->skbq.qlen > 0) {
++-		/* Command was probably timed out before being sent */
++-		MORSE_SKB_INFO(mors, "Command pending queue empty. Removing from SKBQ.\n");
++-		__morse_skbq_unlink(mq, &mq->skbq, skb);
++-		dev_kfree_skb(skb);
++-	} else {
++-		MORSE_SKB_INFO(mors, "Command Q not found\n");
+++	struct sk_buff *p;
+++
+++	skb_queue_walk(&mq->skbq, p) {
+++		if (p == skb) {
+++			MORSE_SKB_INFO(mors, "Command not sent before it ended. Removing from SKBQ.\n");
+++			__morse_skbq_unlink(mq, &mq->skbq, skb);
+++			dev_kfree_skb(skb);
+++			return 0;
+++		}
++ 	}
++-
++-	return 0;
+++	/* the TX path has it (in flight, sent, or failed and freed): not ours to touch */
+++	MORSE_SKB_DBG(mors, "Command already taken by the TX path\n");
+++	return -ENOENT;
++ }
++ 
++ struct morse_skbq_mon_ent {
++diff --git yaps.c yaps.c
++index 1572dc3..4878a31 100644
++--- a/yaps.c
+++++ b/yaps.c
++@@ -303,10 +303,11 @@ static int morse_yaps_tx(struct morse_yaps *yaps, struct morse_skbq *mq)
++ 	__skb_queue_head_init(&skbq_sent);
++ 	__skb_queue_head_init(&skbq_failed);
++ 
++-	if (mq == &yaps->cmd_q)
++-		/* Purge timed-out commands (this should not happen) */
+++	if (mq == &yaps->cmd_q) {
+++		/* #263: commands never go on pending any more (freed in tx_complete) */
+++		WARN_ON_ONCE(!skb_queue_empty(&mq->pending));
++ 		morse_skbq_purge(mq, &mq->pending);
++-	else if (mq == &yaps->mgmt_q && mq->skbq.qlen > 0)
+++	} else if (mq == &yaps->mgmt_q && mq->skbq.qlen > 0)
++ 		/* Purge old mgmt frames that have not been sent due to congestion */
++ 		morse_skbq_purge_aged(mors, mq);
++ 
