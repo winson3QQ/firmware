@@ -3,6 +3,7 @@ Subject: [PATCH] mm6108-driver: route command responses via cmd_inflight; TX pat
 
 Adds feeds/openmanet/morse-micro/mm6108-driver/patches/023-cmd-inflight-263.patch. See winson3QQ/Batman#263.
 
+Batman-Witness: file lib/modules/*/mm6108_sdio.ko cmd_timeout_in_flight
 --- a/feeds/openmanet/morse-micro/mm6108-driver/patches/023-cmd-inflight-263.patch
 +++ b/feeds/openmanet/morse-micro/mm6108-driver/patches/023-cmd-inflight-263.patch
 @@ -0,0 +1,408 @@
