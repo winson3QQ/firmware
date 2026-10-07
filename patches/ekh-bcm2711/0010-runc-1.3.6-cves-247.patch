@@ -6,6 +6,7 @@ winson3QQ/Batman#247 sub-item 2. CVE-2025-31133, CVE-2025-52565, CVE-2025-52881 
 PKG_BUILD_DEPENDS += dockerd, which would close a cycle with containerd -> runc). moby 27.3.1 vendors runc
 1.1.14, so dockerd's EnsureVendoredVersion check for runc is dropped until dockerd is upgraded (#250).
 
+Batman-Witness: pkg runc 1.3.6-
 --- a/feeds/packages/utils/runc/Makefile	2026-10-07 06:43:19.025399385 +0800
 +++ b/feeds/packages/utils/runc/Makefile	2026-10-07 06:43:19.033399384 +0800
 @@ -1,7 +1,9 @@

@@ -12,6 +12,12 @@ on:
     - 'package/kernel/**'
     - 'target/linux/bcm27xx/**'
     - 'feeds.conf.default'
+    - 'patches/ekh-bcm2710/**'
+    - 'scripts/openmanet_setup.sh'
+    - 'scripts/check-board-patches.sh'
+    - 'scripts/board-patch-digest.sh'
+    - 'scripts/patch-witness.sh'
+    - 'scripts/stamp-batman-build.sh'
 
 jobs:
   build-ekh-bcm2710:

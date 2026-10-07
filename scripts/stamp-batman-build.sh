@@ -43,6 +43,12 @@ u=$(git ls-files --others --exclude-standard -- files boards target package incl
 [ ! -f feeds.conf ] || cmp -s feeds.conf feeds.conf.default || { DIRTY=1; why="$why feeds.conf-override"; }
 [ -z "$(git -C feeds/batman status --porcelain)" ] || { DIRTY=1; why="$why feeds/batman-modified"; }
 
+# #275: never stamp a build whose board patches are not all applied, and bake each patch's witness into the
+# image (/etc/batman-patch-witness) so build-board/CI check it in the rootfs and daily-validation on the node.
+sh scripts/check-board-patches.sh "$BOARD" >&2 || { echo "stamp: board patches of $BOARD are not applied in feeds/ (#275)" >&2; exit 1; }
+WIT=$(sh scripts/patch-witness.sh list "$BOARD") || { echo "stamp: a patches/$BOARD patch lacks a valid Batman-Witness line (#275)" >&2; exit 1; }
+NP=$(ls patches/"$BOARD"/*.patch 2>/dev/null | wc -l); PD=$(sh scripts/board-patch-digest.sh "$BOARD")
+
 CODE=$(sed -n 's/^CONFIG_VERSION_CODE="\(.*\)"$/\1/p' .config); REV=$(./scripts/getver.sh 2>/dev/null || echo unknown)
 F7=$(printf %.7s "$FEED"); W7=$(printf %.7s "$FW")
 VER="$REL-$CH.$N+$F7.fw$W7"; [ "$DIRTY" = 1 ] && VER="$VER.dirty"
@@ -59,7 +65,10 @@ mkdir -p files/etc
 	echo "BATMAN_FW_COMMIT=$W7"
 	echo "BATMAN_FW_FEED_PIN=$(printf %.7s "$PIN")"
 	echo "BATMAN_DIRTY=$DIRTY"
+	echo "BATMAN_BOARD_PATCHES=$NP:$PD"
 	echo "BATMAN_FEATURES=$(get BATMAN_FEATURES)"
 	echo "BATMAN_NOTE=$(get BATMAN_NOTE)"
 } > files/etc/batman-build
+printf '%s
+' "$WIT" | grep . > files/etc/batman-patch-witness || : > files/etc/batman-patch-witness
 echo "stamp: $VER board=$BOARD dirty=$DIRTY${why:+ ($why)}"
