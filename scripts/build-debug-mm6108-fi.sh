@@ -16,7 +16,9 @@ set -euo pipefail
 BOARD=${1:?usage: build-debug-mm6108-fi.sh <board> [stock]}; MODE=${2:-}
 TOP=$(pwd); [ -f scripts/build-board.sh ] && [ -f batman-release.env ] || { echo "run from the firmware tree root" >&2; exit 2; }
 case "$BOARD" in ekh-bcm2711) BD=target-aarch64_cortex-a72_musl/linux-bcm27xx_bcm2711 ;; ekh-bcm2710) BD=target-aarch64_cortex-a53_musl/linux-bcm27xx_bcm2710 ;; *) echo "unknown board $BOARD" >&2; exit 2 ;; esac
-[ "$(cat feeds/.batman-patched-board 2>/dev/null)" = "$BOARD" ] || { echo "the feeds carry another board's patches — run scripts/build-board.sh $BOARD first" >&2; exit 1; }
+PB=$(cut -d" " -f1 feeds/.batman-patched-board 2>/dev/null)   # "<board> [<patch digest>]" (#275 adds the digest)
+[ "$PB" = "$BOARD" ] || { echo "the feeds carry patches for "'"$PB"'", not $BOARD — run scripts/build-board.sh $BOARD first" >&2; exit 1; }
+[ ! -f scripts/check-board-patches.sh ] || sh scripts/check-board-patches.sh "$BOARD" >/dev/null || { echo "board patches not applied in feeds/ — run scripts/build-board.sh $BOARD first" >&2; exit 1; }
 STAMP=logs/stamp-$BOARD.txt; [ -f "$STAMP" ] || { echo "no $STAMP — build the board first" >&2; exit 1; }
 VER=$(sed -n 's/^BATMAN_VERSION=//p' "$STAMP"); OWNER=$(stat -c %U "$TOP")
 OUT=${OUT_ROOT:-$(getent passwd "$OWNER" | cut -d: -f6)/out}/$VER/$BOARD/debug; mkdir -p "$OUT"
