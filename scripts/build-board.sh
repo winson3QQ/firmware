@@ -77,12 +77,17 @@ if [ "$CARD_ONLY" = 0 ]; then
 	else echo "$STALE"; echo "-> feeds update (-i)"; INIT=(-i); fi
 	# the feeds carry ONE board's patches (patches/<board>/, applied by -i); building the other board
 	# on them would silently mix boards — re-init when they are not this board's (#247)
+	# #275: and also when THIS board's patch set changed (a patch added, edited or removed): the marker records
+	# "<board> <digest of patches/<board>/>" — a board-only check let 1.5.5-wsl.2 (Pi 4) ship without 0011.
 	PB=$(cat feeds/.batman-patched-board 2>/dev/null || echo unknown)
-	[ "$PB" = "$BOARD" ] || { echo "feeds carry patches for '$PB', not $BOARD -> feeds update (-i)"; INIT=(-i); }
+	WANT="$BOARD $(sh scripts/board-patch-digest.sh "$BOARD")"
+	[ "$PB" = "$WANT" ] || { echo "feeds carry patches '$PB', want '$WANT' -> feeds update (-i)"; INIT=(-i); }
 	# #252: the packages feed must carry the OpenMANET golang rules (synced by -i)
 	sh scripts/check-golang-rules.sh >/dev/null || { echo "packages-feed golang rules are not OpenMANET's -> feeds update (-i)"; INIT=(-i); }
 	./scripts/openmanet_setup.sh "${INIT[@]}" "${RECIPE[@]}" > "logs/setup-$BOARD.log" 2>&1 || { tail -30 "logs/setup-$BOARD.log"; exit 1; }
 	sh scripts/check-feed-pins.sh >&2 || { echo "feeds still not at their pins after setup" >&2; exit 1; }
+	# #275 safety net, independent of the trigger above: every board patch must actually be applied
+	sh scripts/check-board-patches.sh "$BOARD" || { echo "board patches not applied in feeds/ — refusing to build" >&2; exit 1; }
 	sh scripts/check-batman-adv-source.sh
 	sh scripts/check-golang-rules.sh >&2 || { echo "golang rules still not synced after setup" >&2; exit 1; }
 
