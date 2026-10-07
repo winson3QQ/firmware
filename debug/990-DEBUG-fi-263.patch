@@ -1,0 +1,132 @@
+From: Batman <noreply@batman.invalid>
+Subject: [PATCH] DEBUG ONLY: #263 fault injection + command queue counter check (never ship)
+
+See winson3QQ/Batman#263 design section 8 (T1/T2).
+
+diff --git pageset.c pageset.c
+index e5775d9..8bb744b 100644
+--- a/pageset.c
++++ b/pageset.c
+@@ -5,6 +5,7 @@
+  *
+  */
+ #include <linux/gpio.h>
++#include <linux/delay.h>	/* FI-263 msleep */
+ #include "morse.h"
+ #include "debug.h"
+ #include "pageset.h"
+@@ -645,6 +646,39 @@ static int morse_pageset_num_pages(struct morse_pageset *pageset, enum morse_skb
+ 	return num_pages;
+ }
+ 
++/*
++ * FI-263 fault injection — DEBUG BUILD ONLY, never shipped. Each knob is one-shot: write a value,
++ * it fires on the next COMMAND skb the TX path handles, then resets itself to 0.
++ *   fi263_put_delay_ms            sleep after the command page is written, before tx_complete
++ *                                 (the caller's 600 ms wait times out while the skb is in flight)
++ *   fi263_post_complete_delay_ms  sleep after tx_complete, before the next TX pass (the sent skb
++ *                                 sits on pending while the retry sits on skbq — the mis-branch)
++ *   fi263_drop_after_write        the next command IS written to the chip (so it answers: a late
++ *                                 response) but the host then treats the write as failed and frees
++ *                                 the skb via skbq_failed. No second put of the page.
++ *   fi263_msg_id                  only commands with this message_id trigger the knobs (0 = any;
++ *                                 e.g. 0x200c = the vendor command morse_cli stats sends), so
++ *                                 internal commands (PS, keys, channel) are not disturbed.
++ * Run with the driver watchdog off (enable_watchdog=0) so a restart does not reshuffle the queues.
++ */
++static uint fi263_put_delay_ms;
++module_param(fi263_put_delay_ms, uint, 0644);
++static uint fi263_post_complete_delay_ms;
++module_param(fi263_post_complete_delay_ms, uint, 0644);
++static bool fi263_drop_after_write;
++module_param(fi263_drop_after_write, bool, 0644);
++static uint fi263_msg_id;
++module_param(fi263_msg_id, uint, 0644);
++
++static bool fi263_match(struct sk_buff *skb)
++{
++	const struct morse_buff_skb_header *h = (const void *)skb->data;
++	const struct morse_cmd_header *ch = (const void *)(skb->data + sizeof(*h) + h->offset);
++	uint want = READ_ONCE(fi263_msg_id);
++
++	return !want || le16_to_cpu(ch->message_id) == want;
++}
++
+ /* Returns: less than zero (error), 0 (all tx transmitted), greater than zero (more to tx) */
+ static int morse_pageset_tx(struct morse_pageset *pageset, enum morse_skb_channel channel, int aci)
+ {
+@@ -659,6 +693,7 @@ static int morse_pageset_tx(struct morse_pageset *pageset, enum morse_skb_channe
+ 	struct morse_buff_skb_header *hdr;
+ 	struct morse_skbq *mq;
+ 	uint count = 0;
++	bool fi_hit = false;	/* FI-263 */
+ 
+ 	lockdep_assert_held(&pageset->lock);
+ 
+@@ -694,6 +729,21 @@ static int morse_pageset_tx(struct morse_pageset *pageset, enum morse_skb_channe
+ 
+ 		if (n_pages_avail) {
+ 			ret = morse_pageset_write(pageset, channel, pfirst);
++			if (!ret && channel == MORSE_SKB_CHAN_COMMAND && fi263_match(pfirst)) {
++				if (READ_ONCE(fi263_drop_after_write)) {
++					WRITE_ONCE(fi263_drop_after_write, false);
++					pr_err("FI263 inject: command written, then dropped by the host\n");
++					ret = -EIO;	/* -> skbq_failed -> freed; the chip still answers */
++				} else if (READ_ONCE(fi263_put_delay_ms)) {
++					uint ms = READ_ONCE(fi263_put_delay_ms);
++
++					WRITE_ONCE(fi263_put_delay_ms, 0);
++					pr_err("FI263 inject: %u ms after command write, before tx_complete\n", ms);
++					msleep(ms);
++				}
++				if (!ret)
++					fi_hit = true;	/* a matching command is sent in this pass */
++			}
+ 		} else {
+ 			mors->debug.page_stats.no_page++;
+ 			MORSE_ERR(mors, "%s no pages available\n", __func__);
+@@ -737,6 +787,14 @@ static int morse_pageset_tx(struct morse_pageset *pageset, enum morse_skb_channe
+ 	if (skbq_sent.qlen > 0)
+ 		morse_skbq_tx_complete(mq, &skbq_sent);
+ 
++	if (fi_hit && READ_ONCE(fi263_post_complete_delay_ms)) {
++		uint ms = READ_ONCE(fi263_post_complete_delay_ms);
++
++		WRITE_ONCE(fi263_post_complete_delay_ms, 0);
++		pr_err("FI263 inject: %u ms after command tx_complete, before the next TX pass\n", ms);
++		msleep(ms);
++	}
++
+ 	trace_pagesets_tx(channel, count);
+ 	return (n_to_tx - n_to_dequeue_and_tx);
+ }
+diff --git skbq.c skbq.c
+index 845dfae..080e44d 100644
+--- a/skbq.c
++++ b/skbq.c
+@@ -1371,6 +1371,25 @@ int morse_skbq_skb_finish(struct morse_skbq *mq, struct sk_buff *skb,
+ {
+ 	int ret_sts;
+ 
++	/* FI-263 (debug build only): detect the command queue counter corruption at the first
++	 * mis-branch instead of at the eventual Oops. Walks both lists (cmd queue: a few entries).
++	 */
++	if (mq->flags & MORSE_CHIP_IF_FLAGS_COMMAND) {
++		struct sk_buff *p;
++		u32 np = 0, ns = 0;
++		bool on_p = false, on_s = false;
++
++		skb_queue_walk(&mq->pending, p) { np++; if (p == skb) on_p = true; }
++		skb_queue_walk(&mq->skbq, p) { ns++; if (p == skb) on_s = true; }
++		if (!on_p || np > 1 || ns)	/* anything but the normal "sent, on pending alone" */
++			pr_err("FI263 cmd finish: pending qlen=%u walked=%u%s skbq qlen=%u walked=%u%s\n",
++			       mq->pending.qlen, np, on_p ? " (skb here)" : "",
++			       mq->skbq.qlen, ns, on_s ? " (skb here)" : "");
++		WARN(np != mq->pending.qlen || ns != mq->skbq.qlen,
++		     "FI263-QLEN-MISMATCH pending %u/%u skbq %u/%u\n",
++		     mq->pending.qlen, np, mq->skbq.qlen, ns);
++	}
++
+ 	if (mq->flags & MORSE_CHIP_IF_FLAGS_COMMAND)
+ 		ret_sts = __skbq_cmd_finish(mq, skb);
+ 	else
