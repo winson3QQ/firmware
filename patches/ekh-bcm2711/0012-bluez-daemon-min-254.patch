@@ -8,7 +8,7 @@ package owns those. bluez-libs depends on kmod-batman-bt (LE-only stack, hci_uar
 kmod-bluetooth, whose hard-coded BT_HCIUART_BCM=n can never probe the Pi's UART Bluetooth.
 Design: docs/design/254-stage1-impl.md §4.6.
 
-Batman-Witness: pkg bluez-daemon 5.72-3
+Batman-Witness: pkg bluez-daemon 5.72-r3
 --- a/feeds/packages/utils/bluez/Makefile
 +++ b/feeds/packages/utils/bluez/Makefile
 @@ -9,7 +9,10 @@
