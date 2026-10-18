@@ -13,3 +13,6 @@ CONFIG_PACKAGE_batman-ble=y
 # CONFIG_PACKAGE_bluez-utils is not set
 # CONFIG_PACKAGE_bluez-utils-extra is not set
 # CONFIG_PACKAGE_bluez-utils-btmon is not set
+# kmods_diffconfig (common) builds kmod-ath3k=m, which selects kmod-bluetooth; a USB Atheros BT dongle is not a Batman part
+# CONFIG_PACKAGE_kmod-ath3k is not set
+# CONFIG_PACKAGE_ar3k-firmware is not set
