@@ -49,7 +49,7 @@ Batman-Witness: pkg bluez-daemon 5.72-r3
  endef
  
  CONFIGURE_ARGS += \
-@@ -147,16 +145,8 @@
+@@ -147,16 +145,7 @@
  	$(INSTALL_DIR) $(1)/usr/bin
  	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/bluetooth/bluetoothd $(1)/usr/bin/
  	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/bluetoothctl $(1)/usr/bin/
@@ -57,7 +57,7 @@ Batman-Witness: pkg bluez-daemon 5.72-r3
 -	$(INSTALL_DIR) $(1)/etc/dbus-1/system.d/
 -	$(INSTALL_DATA) $(PKG_BUILD_DIR)/src/bluetooth.conf $(1)/etc/dbus-1/system.d/bluetooth.conf
  	$(INSTALL_DIR) $(1)/etc/bluetooth
- 	$(INSTALL_DIR) $(1)/etc/bluetooth/keys
+-	$(INSTALL_DIR) $(1)/etc/bluetooth/keys
 -	$(INSTALL_DATA) $(PKG_BUILD_DIR)/src/main.conf $(1)/etc/bluetooth/main.conf
 -	$(INSTALL_DATA) $(PKG_BUILD_DIR)/profiles/network/network.conf $(1)/etc/bluetooth/network.conf
 -	$(INSTALL_DATA) $(PKG_BUILD_DIR)/profiles/input/input.conf $(1)/etc/bluetooth/input.conf

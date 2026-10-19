@@ -1,24 +1,27 @@
 From: Batman <noreply@batman.invalid>
-Subject: [PATCH] bluez: generate the adapter IRK with getrandom(2) (#254 F26)
+Subject: [PATCH] bluez: IRK via getrandom(2); SecureConnections mode on every start (#254)
 
-winson3QQ/Batman#254 stage 1 (PR-F). BlueZ generates the Identity Resolving Key through
-bt_crypto_new(), which opens AF_ALG ecb(aes)/cmac(aes) sockets. The Batman kernel ships no
-CRYPTO_USER_API (kmod-crypto-user is not in the image, on purpose: it would expose the kernel
-crypto API to every local process), so no IRK was ever generated, set_privacy() never enabled
-privacy and the node advertised with its public address (04, 1.5.12-wsl.3/.4: mgmt current
-settings without "privacy"; "generate_and_write_irk() Failed to open crypto").
-This adds feed patch 900 that takes the 16 bytes from getrandom(2) instead. Reading an existing
-IRK never needed crypto. Design: docs/design/254-stage1-impl.md F26, §4.6.
+winson3QQ/Batman#254 stage 1 (PR-F). Adds bluez feed patch 900 (src/adapter.c):
+1. F26: generate_and_write_irk() takes the 16 bytes from getrandom(2). BlueZ made the IRK
+   through bt_crypto_new(), which needs AF_ALG ecb/cmac sockets; the Batman kernel ships no
+   CRYPTO_USER_API (kmod-crypto-user stays out: it would expose the kernel crypto API to every
+   local process), so no IRK was generated, privacy was never enabled and the node advertised
+   with its public address (04, 1.5.12-wsl.3/.4).
+2. v16 review N1: SET_SECURE_CONN with the configured mode (SecureConnections=only -> 0x02)
+   is sent every time bluetoothd takes the adapter, not only while SC is off, and logged
+   ("Batman: SecureConnections mode 2 requested"). The kernel exposes no "SC only" bit.
+Design: Batman docs/design/254-stage1-impl.md F26, F27, §4.6.
 
-Batman-Witness: file usr/bin/bluetoothd Generated IRK (getrandom)
+Batman-Witness: file usr/bin/bluetoothd Batman: SecureConnections mode %u requested
 --- /dev/null
 +++ b/feeds/packages/utils/bluez/patches/900-batman-irk-getrandom.patch
-@@ -0,0 +1,57 @@
-+Batman #254 (F26): generate the adapter IRK with getrandom(2) instead of AF_ALG
+@@ -0,0 +1,77 @@
++Batman #254: IRK via getrandom(2) (F26); SecureConnections mode sent every start (v16 N1)
 +
 +bt_crypto_new() opens AF_ALG ecb(aes)/cmac(aes) sockets; the Batman kernel ships no
-+CRYPTO_USER_API, so the IRK was never generated and Privacy=device never took effect
-+(04: current settings without 'privacy', public address on air).
++CRYPTO_USER_API, so the IRK was never generated and Privacy=device never took effect.
++SET_SECURE_CONN was sent only while SC was off, so SecureConnections=only could be lost
++for good once SC had been switched on, with nothing in current settings to show it.
 +
 +--- a/src/adapter.c
 ++++ b/src/adapter.c
@@ -71,3 +74,22 @@ Batman-Witness: file usr/bin/bluetoothd Generated IRK (getrandom)
 + 
 + 	g_key_file_set_string(key_file, "General", "IdentityResolvingKey",
 + 								str_irk_out);
++@@ -10303,9 +10299,17 @@
++ 		break;
++ 	}
++ 
++-	if (missing_settings & MGMT_SETTING_SECURE_CONN)
+++	/* Batman #254 (v16 review N1): upstream sends SET_SECURE_CONN only while SC
+++	 * is off, so once anything turned SC on (root: bluetoothctl mgmt.sc on)
+++	 * SecureConnections=only was never applied again, and current settings has
+++	 * no bit that shows "only". Send the configured mode every time the daemon
+++	 * takes the adapter; LE-only, the kernel changes the flags even while powered.
+++	 * A failure is logged by set_mode_complete("Failed to set mode"). */
+++	if (adapter->supported_settings & MGMT_SETTING_SECURE_CONN) {
+++		info("Batman: SecureConnections mode %u requested", btd_opts.secure_conn);
++ 		set_mode(adapter, MGMT_OP_SET_SECURE_CONN,
++ 					btd_opts.secure_conn);
+++	}
++ 
++ 	if (adapter->supported_settings & MGMT_SETTING_PRIVACY)
++ 		set_privacy(adapter, btd_opts.privacy);

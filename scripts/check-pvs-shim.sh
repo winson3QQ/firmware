@@ -26,13 +26,16 @@ a=$(sha256sum < "$WANT" | cut -d' ' -f1); b=$(sha256sum < "$GOT" | cut -d' ' -f1
 n=$(cd "$R" && find . -name 'persistent_vars_storage*' | wc -l)
 [ "$n" = 1 ] || fail "rootfs has $n files named persistent_vars_storage* (want 1): $(cd "$R" && find . -name 'persistent_vars_storage*' | tr '\n' ' ')"
 # no new direct EEPROM-config reader
-extra=$(cd "$R" && grep -rIl 'bootloader_config' . 2>/dev/null | while read -r f; do case " $ALLOW " in *" $f "*) ;; *) echo "$f";; esac; done)
+# -a: binaries too (v16 review A-N4). Boundary: a reader that assembles the string at run time is not seen.
+extra=$(cd "$R" && grep -rla 'bootloader_config' . 2>/dev/null | while read -r f; do case " $ALLOW " in *" $f "*) ;; *) echo "$f";; esac; done)
 [ -z "$extra" ] || fail "direct bootloader_config readers outside the allow list: $(echo $extra)"
 S=$(mktemp -d); trap 'rm -rf "$S"' EXIT
 { echo '#!/bin/sh'; echo 'echo "BOOT_ORDER=0xf41"'; for k in $KEYS; do echo "echo \"$k=LEAK\""; done; } > "$S/vcgencmd"
 printf '#!/bin/sh\nexit 0\n' > "$S/logger"
 chmod 755 "$S/vcgencmd" "$S/logger"
-SHELLS="sh"; command -v busybox >/dev/null 2>&1 && SHELLS="sh busybox_ash"
+# the target shell is busybox ash; a host without busybox is a FAIL, not a quiet sh-only pass (v16 B-m5)
+command -v busybox >/dev/null 2>&1 || fail "host has no busybox (needed to run the shim under ash)"
+SHELLS="sh busybox_ash"
 for shl in $SHELLS; do
 	case $shl in busybox_ash) run(){ PATH="$S:/usr/bin:/bin" busybox ash "$GOT" "$@"; } ;; *) run(){ PATH="$S:/usr/bin:/bin" sh "$GOT" "$@"; } ;; esac
 	for k in $KEYS; do

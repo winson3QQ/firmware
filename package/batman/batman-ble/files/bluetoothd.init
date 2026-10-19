@@ -11,12 +11,32 @@ USE_PROCD=1
 PROG=/usr/bin/bluetoothd
 STORE=/var/lib/bluetooth
 
+# #254 v16: the BlueZ store (adapter settings + IRK) lives on tmpfs (/var -> /tmp): a fresh IRK every
+# boot, never in a sysupgrade -b backup, never a stale or corrupt IRK that turns privacy off for good.
+# Batman bonds nothing, so nothing in it needs to persist.
+# v16 review (A-N6 / B-m3): /tmp is world-writable and /tmp/lib is first made by dnsmasq (S19), so a
+# non-root process could pre-create /tmp/lib or the store and plant a known IRK. Same rules as
+# /usr/lib/batman/rundir.sh (#280): parent and store must be ours (root), not symlinks, not group/other
+# writable; otherwise bluetoothd is NOT started (fail closed: no BLE beats a trackable or planted key).
+_mode(){ ls -ld "$1" 2>/dev/null | cut -c1-10; }
+_bad(){ logger -t bluetoothd-init -p daemon.err "NOT STARTING bluetoothd: $*"; echo "bluetoothd-init: NOT STARTING: $*" >&2; return 1; }
+store_ok(){
+	local p
+	[ "$(readlink -f /var)" = /tmp ] || { _bad "/var is not /tmp (got $(readlink -f /var))"; return 1; }
+	p=/tmp/lib
+	[ -e "$p" ] || [ -L "$p" ] || mkdir -m 755 "$p" 2>/dev/null
+	[ -d "$p" ] && [ ! -L "$p" ] && [ -O "$p" ] || { _bad "$p not a directory of ours"; return 1; }
+	case "$(_mode "$p")" in d????w????|d???????w?) _bad "$p is group/other-writable"; return 1;; esac
+	# the spike linked the store to the overlay; drop that link (only a root-owned symlink is ours to remove)
+	if [ -L "$STORE" ]; then [ -O "$STORE" ] && rm -f "$STORE" || { _bad "$STORE is a foreign symlink"; return 1; }; fi
+	mkdir -m 700 "$STORE" 2>/dev/null
+	[ -d "$STORE" ] && [ ! -L "$STORE" ] && [ -O "$STORE" ] && [ "$(_mode "$STORE")" = drwx------ ] \
+		|| { _bad "$STORE is not a private directory of ours"; return 1; }
+	return 0
+}
+
 start_service() {
-	# #254 v16: the BlueZ store (adapter settings + IRK) lives on tmpfs (/var -> /tmp): a fresh IRK every
-	# boot, never in a sysupgrade -b backup, never a stale or corrupt IRK that turns privacy off for good.
-	# Batman bonds nothing, so nothing in it needs to persist. Replace the spike's symlink to the overlay.
-	[ -L "$STORE" ] && rm -f "$STORE"
-	mkdir -p "$STORE"; chmod 700 "$STORE"
+	store_ok || return 1
 	procd_open_instance
 	procd_set_param command "$PROG" -n --noplugin=hostname,autopair,battery,neard,sap
 	procd_set_param respawn 3600 5 0
