@@ -1,0 +1,73 @@
+From: Batman <noreply@batman.invalid>
+Subject: [PATCH] bluez: generate the adapter IRK with getrandom(2) (#254 F26)
+
+winson3QQ/Batman#254 stage 1 (PR-F). BlueZ generates the Identity Resolving Key through
+bt_crypto_new(), which opens AF_ALG ecb(aes)/cmac(aes) sockets. The Batman kernel ships no
+CRYPTO_USER_API (kmod-crypto-user is not in the image, on purpose: it would expose the kernel
+crypto API to every local process), so no IRK was ever generated, set_privacy() never enabled
+privacy and the node advertised with its public address (04, 1.5.12-wsl.3/.4: mgmt current
+settings without "privacy"; "generate_and_write_irk() Failed to open crypto").
+This adds feed patch 900 that takes the 16 bytes from getrandom(2) instead. Reading an existing
+IRK never needed crypto. Design: docs/design/254-stage1-impl.md F26, §4.6.
+
+Batman-Witness: file usr/bin/bluetoothd Generated IRK (getrandom)
+--- /dev/null
++++ b/feeds/packages/utils/bluez/patches/900-batman-irk-getrandom.patch
+@@ -0,0 +1,57 @@
++Batman #254 (F26): generate the adapter IRK with getrandom(2) instead of AF_ALG
++
++bt_crypto_new() opens AF_ALG ecb(aes)/cmac(aes) sockets; the Batman kernel ships no
++CRYPTO_USER_API, so the IRK was never generated and Privacy=device never took effect
++(04: current settings without 'privacy', public address on air).
++
++--- a/src/adapter.c
+++++ b/src/adapter.c
++@@ -21,6 +21,7 @@
++ #include <stdlib.h>
++ #include <stdbool.h>
++ #include <sys/ioctl.h>
+++#include <sys/random.h>
++ #include <sys/file.h>
++ #include <sys/stat.h>
++ #include <dirent.h>
++@@ -4161,32 +4162,27 @@
++ static int generate_and_write_irk(uint8_t *irk, GKeyFile *key_file,
++ 							const char *filename)
++ {
++-	struct bt_crypto *crypto;
++ 	char str_irk_out[33];
++ 	gsize length = 0;
++ 	GError *gerr = NULL;
++ 	char *str;
++ 	int i;
++ 
++-	crypto = bt_crypto_new();
++-	if (!crypto) {
++-		error("Failed to open crypto");
+++	/* Batman #254: take the 16 random bytes from getrandom(2), not from
+++	 * bt_crypto_new(), which needs AF_ALG (ecb/cmac sockets) that this kernel
+++	 * does not ship. Without an IRK set_privacy() never enables privacy and the
+++	 * controller advertises with its public address. Blocks until the kernel
+++	 * CRNG is ready; any failure leaves privacy off, as upstream does. */
+++	if (getrandom(irk, 16, 0) != 16) {
+++		error("Failed to generate IRK (getrandom): %s", strerror(errno));
++ 		return -1;
++ 	}
++ 
++-	if (!bt_crypto_random_bytes(crypto, irk, 16)) {
++-		error("Failed to generate IRK");
++-		bt_crypto_unref(crypto);
++-		return -1;
++-	}
++-
++-	bt_crypto_unref(crypto);
++-
++ 	for (i = 0; i < 16; i++)
++ 		sprintf(str_irk_out + (i * 2), "%02x", irk[i]);
++ 
++ 	str_irk_out[32] = '\0';
++-	info("Generated IRK successfully");
+++	info("Generated IRK (getrandom)");
++ 
++ 	g_key_file_set_string(key_file, "General", "IdentityResolvingKey",
++ 								str_irk_out);
