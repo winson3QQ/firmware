@@ -32,7 +32,7 @@ Batman-Witness: pkg bluez-daemon 5.72-r3
  endef
  
  define Package/bluez-utils
-@@ -69,15 +72,11 @@
+@@ -69,15 +72,10 @@
    SECTION:=utils
    CATEGORY:=Utilities
    TITLE+= daemon
@@ -44,12 +44,12 @@ Batman-Witness: pkg bluez-daemon 5.72-r3
 -/etc/bluetooth/main.conf
 -/etc/bluetooth/network.conf
 -/etc/bluetooth/input.conf
- /etc/bluetooth/keys
+-/etc/bluetooth/keys
 -/etc/config/bluetooth
  endef
  
  CONFIGURE_ARGS += \
-@@ -147,16 +146,8 @@
+@@ -147,16 +145,8 @@
  	$(INSTALL_DIR) $(1)/usr/bin
  	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/bluetooth/bluetoothd $(1)/usr/bin/
  	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/bluetoothctl $(1)/usr/bin/
