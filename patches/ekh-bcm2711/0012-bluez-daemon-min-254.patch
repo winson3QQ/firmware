@@ -1,0 +1,68 @@
+From: Batman <noreply@batman.invalid>
+Subject: [PATCH] bluez: minimal daemon for the Batman BLE transport (#254)
+
+winson3QQ/Batman#254 stage 1 (PR-F). bluez-daemon = bluetoothd + bluetoothctl only: no obexd, no
+hciattach/hcitool/rfcomm/gatttool/sdptool (bluez-utils*), no upstream /etc/bluetooth/main.conf,
+/etc/dbus-1/system.d/bluetooth.conf (it lets every local uid drive org.bluez) or init — the batman-ble
+package owns those. bluez-libs depends on kmod-batman-bt (LE-only stack, hci_uart+btbcm) instead of
+kmod-bluetooth, whose hard-coded BT_HCIUART_BCM=n can never probe the Pi's UART Bluetooth.
+Design: docs/design/254-stage1-impl.md §4.6.
+
+Batman-Witness: pkg bluez-daemon 5.72-r3
+--- a/feeds/packages/utils/bluez/Makefile
++++ b/feeds/packages/utils/bluez/Makefile
+@@ -9,7 +9,10 @@
+ 
+ PKG_NAME:=bluez
+ PKG_VERSION:=5.72
+-PKG_RELEASE:=2
++# Batman #254 (board patch 0012): -daemon is bluetoothd + bluetoothctl only (no obexd, no hciattach/
++# rfcomm/gatttool, no upstream main.conf / dbus policy / init — batman-ble owns those); -libs depends on
++# kmod-batman-bt (LE-only stack) instead of kmod-bluetooth.
++PKG_RELEASE:=3
+ 
+ PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
+ PKG_SOURCE_URL:=@KERNEL/linux/bluetooth/
+@@ -37,7 +40,7 @@
+   SECTION:=libs
+   CATEGORY:=Libraries
+   TITLE+= library
+-  DEPENDS:=+libpthread +USB_SUPPORT:kmod-bluetooth
++  DEPENDS:=+libpthread +kmod-batman-bt
+ endef
+ 
+ define Package/bluez-utils
+@@ -69,15 +72,10 @@
+   SECTION:=utils
+   CATEGORY:=Utilities
+   TITLE+= daemon
+-  DEPENDS:=+bluez-libs +bluez-utils +bluez-utils-extra +glib2 +libncurses +libreadline +dbus +libical $(INTL_DEPENDS) $(ICONV_DEPENDS)
++  DEPENDS:=+bluez-libs +glib2 +libncurses +libreadline +dbus $(INTL_DEPENDS) $(ICONV_DEPENDS)
+ endef
+ 
+ define Package/bluez-daemon/conffiles
+-/etc/bluetooth/main.conf
+-/etc/bluetooth/network.conf
+-/etc/bluetooth/input.conf
+-/etc/bluetooth/keys
+-/etc/config/bluetooth
+ endef
+ 
+ CONFIGURE_ARGS += \
+@@ -147,16 +145,7 @@
+ 	$(INSTALL_DIR) $(1)/usr/bin
+ 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/bluetooth/bluetoothd $(1)/usr/bin/
+ 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/bluetoothctl $(1)/usr/bin/
+-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/bluetooth/obexd $(1)/usr/bin/
+-	$(INSTALL_DIR) $(1)/etc/dbus-1/system.d/
+-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/src/bluetooth.conf $(1)/etc/dbus-1/system.d/bluetooth.conf
+ 	$(INSTALL_DIR) $(1)/etc/bluetooth
+-	$(INSTALL_DIR) $(1)/etc/bluetooth/keys
+-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/src/main.conf $(1)/etc/bluetooth/main.conf
+-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/profiles/network/network.conf $(1)/etc/bluetooth/network.conf
+-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/profiles/input/input.conf $(1)/etc/bluetooth/input.conf
+-	$(INSTALL_DIR) $(1)/etc/init.d
+-	$(INSTALL_BIN) ./files/bluetoothd.init $(1)/etc/init.d/bluetoothd
+ endef
+ 
+ $(eval $(call BuildPackage,bluez-libs))

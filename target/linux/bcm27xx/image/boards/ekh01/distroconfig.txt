@@ -18,6 +18,8 @@ dtparam=i2c1=on
 core_freq_min=400
 [pi4]
 dtoverlay=miniuart-bt
+# Batman #254: BT on the mini UART needs a fixed core clock (baud derives from it; idle drops to 200 MHz)
+core_freq_min=500
 dtparam=i2c1=on
 [cm4]
 # This overlay is used to allow m.2 wifi cards

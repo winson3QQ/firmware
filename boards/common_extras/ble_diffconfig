@@ -1,0 +1,18 @@
+# Batman #254 — BLE transport for phone-app provisioning (PR-F spike, Pi 4 first).
+# LE-only kernel stack owned by kmod-batman-bt (package/kernel/batman-bt); OpenWrt's kmod-bluetooth is
+# deselected explicitly because its KCONFIG (BT_BREDR=y, BT_HCIUART_BCM=n) contradicts ours and the two
+# would otherwise be merged into one kernel config. bluez-daemon is the board-patched minimal build
+# (patches/ekh-bcm2711/0012); batman-ble carries main.conf / dbus policy / init.
+CONFIG_PACKAGE_kmod-batman-bt=y
+CONFIG_PACKAGE_brcm-bt-firmware-4345c0=y
+CONFIG_PACKAGE_bluez-libs=y
+CONFIG_PACKAGE_bluez-daemon=y
+CONFIG_PACKAGE_batman-ble=y
+# CONFIG_PACKAGE_kmod-bluetooth is not set
+# CONFIG_PACKAGE_kmod-bluetooth-6lowpan is not set
+# CONFIG_PACKAGE_bluez-utils is not set
+# CONFIG_PACKAGE_bluez-utils-extra is not set
+# CONFIG_PACKAGE_bluez-utils-btmon is not set
+# kmods_diffconfig (common) builds kmod-ath3k=m, which selects kmod-bluetooth; a USB Atheros BT dongle is not a Batman part
+# CONFIG_PACKAGE_kmod-ath3k is not set
+# CONFIG_PACKAGE_ar3k-firmware is not set
