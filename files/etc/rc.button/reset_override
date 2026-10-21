@@ -1,0 +1,31 @@
+#!/bin/sh
+# Based on the openwrt rc.button/reset script. Batman (#254 P1): >= 10 s no longer runs `jffs2reset -y` (an overlay
+# wipe re-applies p5 and is not a factory reset; transfer = reflash, U8) — it reboots like the 5 s press.
+
+. /etc/diag.sh
+
+case "$ACTION" in
+pressed)
+	return 5
+;;
+timeout)
+	if [ "$SEEN" -ge 5 ]
+	then
+		set_state rebooting
+		return 5
+	fi
+;;
+released)
+	if [ "$SEEN" -lt 2 ]
+	then
+		ubus call dpp push_button
+	elif [ "$SEEN" -ge 5 ]
+	then
+		logger -t button -p daemon.notice "rebooting due to button press (${SEEN}s; Batman: no overlay wipe)"
+		sync
+		reboot
+	fi
+;;
+esac
+
+return 0
