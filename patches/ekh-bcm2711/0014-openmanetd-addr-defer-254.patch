@@ -1,0 +1,25 @@
+From: Batman <noreply@batman.invalid>
+Subject: [PATCH] openmanetd: defer address reservation inside an uncommitted tryboot trial (#254)
+
+winson3QQ/Batman#254 stage 1 (PR-P1, B-M4 / P-U13). openmanetd's AddressReservationWorker reserves an IP
+125 s after start and then runs a plain `reboot` with no tryboot check (internal/mgmt/address_reservation.go);
+inside an A/B trial that reboot races batman-autocommit's commit and, when it wins, the OTA silently falls
+back to the old slot. The init now asks the Batman decider /usr/libexec/batman-addr-defer once per start and,
+when it says so, runs the instance with ALFRED.DATATYPES.ADDRESSRESERVATION=false (viper AutomaticEnv,
+cmd/root.go). Nothing else changes; without the decider (an image without the Batman feed) the init behaves
+as stock. `batman-slot commit` re-registers the service so procd restarts it without the variable.
+Design: docs/design/254-p1-impl.md §13.8 / §13.8.2.
+
+Batman-Witness: file /etc/init.d/openmanetd batman-addr-defer
+--- a/feeds/openmanet/openmanetd/files/openmanetd.init
++++ b/feeds/openmanet/openmanetd/files/openmanetd.init
+@@ -9,6 +9,9 @@ CONF="/etc/openmanetd/config.yml"
+ start_service() {
+ 	procd_open_instance
+ 	procd_set_param command "$PROG" --config "$CONF"
++	# Batman #254: inside an uncommitted A/B trial the address-reservation reboot must wait for the commit
++	[ -x /usr/libexec/batman-addr-defer ] && /usr/libexec/batman-addr-defer \
++		&& procd_set_param env ALFRED.DATATYPES.ADDRESSRESERVATION=false
+ 
+ 	procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
+ 	procd_set_param stdout 1
