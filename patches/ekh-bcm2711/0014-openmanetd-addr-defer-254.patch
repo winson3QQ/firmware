@@ -10,7 +10,7 @@ cmd/root.go). Nothing else changes; without the decider (an image without the Ba
 as stock. `batman-slot commit` re-registers the service so procd restarts it without the variable.
 Design: docs/design/254-p1-impl.md §13.8 / §13.8.2.
 
-Batman-Witness: file /etc/init.d/openmanetd batman-addr-defer
+Batman-Witness: file etc/init.d/openmanetd batman-addr-defer
 --- a/feeds/openmanet/openmanetd/files/openmanetd.init
 +++ b/feeds/openmanet/openmanetd/files/openmanetd.init
 @@ -9,6 +9,9 @@ CONF="/etc/openmanetd/config.yml"
