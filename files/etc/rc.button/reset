@@ -1,0 +1,31 @@
+#!/bin/sh
+# Batman (#254 P1): the reset button never wipes the overlay. A long press used to run `jffs2reset -y`; on a Batman
+# node that only re-applies the per-node config from p5 (96) and is NOT a factory reset — transfer = reflash with the
+# transfer tool (U8). So: short press reboots, long press reboots too, with a log line saying why nothing was wiped.
+
+. /lib/functions.sh
+
+OVERLAY="$( grep ' /overlay ' /proc/mounts )"
+
+case "$ACTION" in
+pressed)
+	[ -z "$OVERLAY" ] && return 0
+
+	return 5
+;;
+timeout)
+	. /etc/diag.sh
+	set_state failsafe
+;;
+released)
+	if [ "$SEEN" -ge 5 ]
+	then
+		logger -t button -p daemon.notice "reset button held ${SEEN}s: rebooting (Batman: no overlay wipe — owner and data are kept; transfer = reflash)"
+	fi
+	echo "REBOOT" > /dev/console
+	sync
+	reboot
+;;
+esac
+
+return 0
