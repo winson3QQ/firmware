@@ -1,0 +1,218 @@
+From: Batman <yellow.winson@gmail.com>
+Subject: [PATCH] serial: 8250_bcm2835aux: hardware RTS/CTS auto flow control (#305)
+
+The mini UART can stop its transmitter on CTS and de-assert RTS when the
+8-byte receive FIFO has 3 empty spaces left, but the driver never enabled it.
+With the Bluetooth controller on the mini UART (miniuart-bt), any interrupt
+latency longer than 8 characters overruns the FIFO, desynchronises H4 and
+wedges the controller (Batman #305: 88 overruns vs 0 in a 3 x 30 min A/B).
+
+Enable AUTOCTS when termios has CRTSCTS and AUTORTS when, in addition, RTS is
+raised, so hci_bcm keeps manual RTS during power-up. Polarity: active-low.
+UPSTAT_AUTORTS is not set (no port->throttle in this driver). State in sysfs:
+<device>/autoflow. Written against kernel 6.6.138; downstream, rebase on
+kernel bumps.
+
+Signed-off-by: Batman <yellow.winson@gmail.com>
+---
+--- a/drivers/tty/serial/8250/8250_bcm2835aux.c	2026-10-24 21:03:42.786936994 +0800
++++ b/drivers/tty/serial/8250/8250_bcm2835aux.c	2026-10-24 21:03:42.810566188 +0800
+@@ -7,9 +7,15 @@
+  * Based on 8250_lpc18xx.c:
+  * Copyright (C) 2015 Joachim Eastwood <manabian@gmail.com>
+  *
+- * The bcm2835aux is capable of RTS auto flow-control, but this driver doesn't
+- * take advantage of it yet.  When adding support, be sure not to enable it
+- * simultaneously to rs485.
++ * Batman #305: hardware auto flow control (CNTL AUTOCTS/AUTORTS) is enabled
++ * whenever termios asks for CRTSCTS and rs485 is off. AUTOCTS follows CRTSCTS;
++ * AUTORTS additionally requires RTS to be raised, so a client that drives RTS
++ * by hand (hci_bcm lowers RTS while it powers the controller up) keeps manual
++ * control. Both lines are active-low (RTSINV/CTSINV): the reset value of the
++ * assert-level bits is active-high. UPSTAT_AUTORTS is deliberately NOT set:
++ * this driver has no port->throttle, so the serial core must keep throttling by
++ * clearing RTS through set_mctrl, which then turns AUTORTS off.
++ * The current state is readable by root in sysfs: <device>/autoflow (0400).
+  */
+ 
+ #include <linux/clk.h>
+@@ -43,8 +49,17 @@
+ 	struct clk *clk;
+ 	int line;
+ 	u32 cntl;
++	bool crtscts;			/* #305: termios asked for RTS/CTS */
++	u8 hist[8];			/* #305: last CNTL values written */
++	unsigned int nhist;
+ };
+ 
++#define BCM2835_AUX_UART_CNTL_FLOW	(BCM2835_AUX_UART_CNTL_AUTORTS | \
++					 BCM2835_AUX_UART_CNTL_AUTOCTS | \
++					 BCM2835_AUX_UART_CNTL_RTS4 | \
++					 BCM2835_AUX_UART_CNTL_RTSINV | \
++					 BCM2835_AUX_UART_CNTL_CTSINV)
++
+ struct bcm2835_aux_serial_driver_data {
+ 	resource_size_t offset;
+ };
+@@ -83,6 +98,124 @@
+ 	}
+ }
+ 
++/* #305: caller holds the port lock; mctrl is the value being set (not port->mctrl) */
++static void bcm2835aux_update_flow(struct uart_8250_port *up, unsigned int mctrl,
++				   bool rs485)
++{
++	struct bcm2835aux_data *data = dev_get_drvdata(up->port.dev);
++	u32 cntl = data->cntl & ~BCM2835_AUX_UART_CNTL_FLOW;
++	bool on = data->crtscts && !rs485;
++
++	lockdep_assert_held_once(&up->port.lock);
++
++	if (on)
++		cntl |= BCM2835_AUX_UART_CNTL_AUTOCTS | BCM2835_AUX_UART_CNTL_CTSINV;
++	if (on && (mctrl & TIOCM_RTS))
++		cntl |= BCM2835_AUX_UART_CNTL_AUTORTS | BCM2835_AUX_UART_CNTL_RTSINV;
++	if (cntl == data->cntl)
++		return;
++	data->cntl = cntl;
++	serial_out(up, BCM2835_AUX_UART_CNTL, cntl);
++	data->hist[data->nhist++ % ARRAY_SIZE(data->hist)] = cntl;
++}
++
++static void bcm2835aux_set_mctrl(struct uart_port *port, unsigned int mctrl)
++{
++	serial8250_do_set_mctrl(port, mctrl);
++	bcm2835aux_update_flow(up_to_u8250p(port), mctrl,
++			       port->rs485.flags & SER_RS485_ENABLED);
++}
++
++static void bcm2835aux_set_termios(struct uart_port *port,
++				   struct ktermios *termios,
++				   const struct ktermios *old)
++{
++	struct bcm2835aux_data *data = dev_get_drvdata(port->dev);
++	unsigned long flags;
++
++	uart_port_lock_irqsave(port, &flags);
++	data->crtscts = !!(termios->c_cflag & CRTSCTS);
++	port->status &= ~UPSTAT_AUTOCTS;
++	if (data->crtscts && !(port->rs485.flags & SER_RS485_ENABLED))
++		port->status |= UPSTAT_AUTOCTS;
++	uart_port_unlock_irqrestore(port, flags);
++
++	serial8250_do_set_termios(port, termios, old);
++
++	uart_port_lock_irqsave(port, &flags);
++	bcm2835aux_update_flow(up_to_u8250p(port), port->mctrl,
++			       port->rs485.flags & SER_RS485_ENABLED);
++	uart_port_unlock_irqrestore(port, flags);
++}
++
++static void bcm2835aux_shutdown(struct uart_port *port)
++{
++	struct bcm2835aux_data *data = dev_get_drvdata(port->dev);
++	unsigned long flags;
++
++	serial8250_do_shutdown(port);
++
++	uart_port_lock_irqsave(port, &flags);
++	data->crtscts = false;
++	port->status &= ~UPSTAT_AUTOCTS;
++	bcm2835aux_update_flow(up_to_u8250p(port), 0, false);
++	uart_port_unlock_irqrestore(port, flags);
++}
++
++/* called with the port lock held; port->rs485 is updated only after we return */
++static int bcm2835aux_rs485_config(struct uart_port *port,
++				   struct ktermios *termios,
++				   struct serial_rs485 *rs485)
++{
++	struct bcm2835aux_data *data = dev_get_drvdata(port->dev);
++	bool on = rs485->flags & SER_RS485_ENABLED;
++	int ret;
++
++	ret = serial8250_em485_config(port, termios, rs485);
++	if (ret)
++		return ret;
++	port->status &= ~UPSTAT_AUTOCTS;
++	if (data->crtscts && !on)
++		port->status |= UPSTAT_AUTOCTS;
++	bcm2835aux_update_flow(up_to_u8250p(port), port->mctrl, on);
++	return 0;
++}
++
++static ssize_t autoflow_show(struct device *dev, struct device_attribute *attr,
++			     char *buf)
++{
++	struct bcm2835aux_data *data = dev_get_drvdata(dev);
++	struct uart_8250_port *up = serial8250_get_port(data->line);
++	unsigned int n, i, first;
++	unsigned long flags;
++	u32 hw, cache;
++	u8 h[8];
++	int len;
++
++	uart_port_lock_irqsave(&up->port, &flags);
++	hw = serial_in(up, BCM2835_AUX_UART_CNTL);
++	cache = data->cntl;
++	n = data->nhist;
++	memcpy(h, data->hist, sizeof(h));
++	uart_port_unlock_irqrestore(&up->port, flags);
++
++	len = sysfs_emit(buf, "hw=0x%02x cache=0x%02x writes=%u last=",
++			 hw & 0xff, cache, n);
++	first = n > ARRAY_SIZE(h) ? n - ARRAY_SIZE(h) : 0;
++	for (i = first; i < n; i++)
++		len += sysfs_emit_at(buf, len, "%s0x%02x", i == first ? "" : ",",
++				     h[i % ARRAY_SIZE(h)]);
++	len += sysfs_emit_at(buf, len, "\n");
++	return len;
++}
++static DEVICE_ATTR_ADMIN_RO(autoflow);
++
++static struct attribute *bcm2835aux_attrs[] = {
++	&dev_attr_autoflow.attr,
++	NULL,
++};
++ATTRIBUTE_GROUPS(bcm2835aux);
++
+ static int bcm2835aux_serial_probe(struct platform_device *pdev)
+ {
+ 	const struct bcm2835_aux_serial_driver_data *bcm_data;
+@@ -107,7 +240,10 @@
+ 	up.port.fifosize = 8;
+ 	up.port.flags = UPF_SHARE_IRQ | UPF_FIXED_PORT | UPF_FIXED_TYPE |
+ 			UPF_SKIP_TEST | UPF_IOREMAP;
+-	up.port.rs485_config = serial8250_em485_config;
++	up.port.rs485_config = bcm2835aux_rs485_config;
++	up.port.set_termios = bcm2835aux_set_termios;
++	up.port.set_mctrl = bcm2835aux_set_mctrl;
++	up.port.shutdown = bcm2835aux_shutdown;
+ 	up.port.rs485_supported = serial8250_em485_supported;
+ 	up.bugs |= UART_BUG_NOMSI;
+ 	up.rs485_start_tx = bcm2835aux_rs485_start_tx;
+@@ -198,6 +334,16 @@
+ 	}
+ 	data->line = ret;
+ 
++	/* #305: the cache is the only writer of CNTL; make the hardware match it */
++	{
++		struct uart_8250_port *p = serial8250_get_port(data->line);
++		unsigned long flags;
++
++		uart_port_lock_irqsave(&p->port, &flags);
++		serial_out(p, BCM2835_AUX_UART_CNTL, data->cntl);
++		uart_port_unlock_irqrestore(&p->port, flags);
++	}
++
+ 	return 0;
+ 
+ dis_clk:
+@@ -234,6 +380,7 @@
+ static struct platform_driver bcm2835aux_serial_driver = {
+ 	.driver = {
+ 		.name = "bcm2835-aux-uart",
++		.dev_groups = bcm2835aux_groups,
+ 		.of_match_table = bcm2835aux_serial_match,
+ 		.acpi_match_table = bcm2835aux_serial_acpi_match,
+ 	},

@@ -1,0 +1,36 @@
+From: Batman <yellow.winson@gmail.com>
+Subject: [PATCH] Bluetooth: hci_bcm: drop flow control before powering the controller off (#305)
+
+bcm_close() powers the controller off and only then is the serdev port
+closed. A powered-off controller de-asserts its RTS, i.e. the host's CTS.
+With CRTSCTS still set (serdev always sets it) and hardware CTS in force
+(999-batman-bcm2835aux-autoflow-305), anything left in the UART TX FIFO
+cannot drain, and tty_port_close_start() waits closing_wait (30 s; 30.14 s
+measured on the mini UART with the transmitter held off, on a kernel without
+either patch). Clear flow control first (serdev only), as bcm_open() does
+around power-up, so uart_wait_until_sent() falls back to its 2 x FIFO-timeout
+bound (120 ms measured with both patches).
+
+Written against kernel 6.6.138; downstream, rebase on kernel bumps.
+
+Signed-off-by: Batman <yellow.winson@gmail.com>
+---
+--- a/drivers/bluetooth/hci_bcm.c	2026-10-24 21:21:47.683724883 +0800
++++ b/drivers/bluetooth/hci_bcm.c	2026-10-24 21:21:47.711261327 +0800
+@@ -551,6 +551,16 @@
+ 			pm_runtime_disable(bdev->dev);
+ 		}
+ 
++		/* Batman #305: drop hardware flow control before the controller loses
++		 * power. A powered-off controller de-asserts its RTS (our CTS); with
++		 * CRTSCTS still set the UART cannot drain what is left in its TX FIFO
++		 * and the port close that follows waits the whole closing_wait (30 s,
++		 * measured). Mirrors the RTS handling of bcm_open() at power-up.
++		 * serdev only: on the ldisc path the port may already be shut down.
++		 */
++		if (hu->serdev)
++			hci_uart_set_flow_control(hu, true);
++
+ 		err = bcm_gpio_set_power(bdev, false);
+ 		if (err)
+ 			bt_dev_err(hu->hdev, "Failed to power down");
