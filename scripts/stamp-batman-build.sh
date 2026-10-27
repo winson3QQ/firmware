@@ -51,7 +51,10 @@ NP=$(ls patches/"$BOARD"/*.patch 2>/dev/null | wc -l); PD=$(sh scripts/board-pat
 
 CODE=$(sed -n 's/^CONFIG_VERSION_CODE="\(.*\)"$/\1/p' .config); REV=$(./scripts/getver.sh 2>/dev/null || echo unknown)
 F7=$(printf %.7s "$FEED"); W7=$(printf %.7s "$FW")
-VER="$REL-$CH.$N+$F7.fw$W7"; [ "$DIRTY" = 1 ] && VER="$VER.dirty"
+# #254 (254-h23 §4.2): a -wbox test variant is never a release: DIRTY forced, the variant in the version
+WBOX=${BATMAN_WBOX:-}
+case "$WBOX" in '') ;; *[!a-z0-9-]*) echo "stamp: bad BATMAN_WBOX '$WBOX'" >&2; exit 1 ;; *) DIRTY=1; why="$why wbox-$WBOX" ;; esac
+VER="$REL-$CH.$N+$F7.fw$W7"; [ "$DIRTY" = 1 ] && VER="$VER.dirty"; [ -n "$WBOX" ] && VER="$VER.wbox-$WBOX"
 
 mkdir -p files/etc
 {
@@ -68,6 +71,7 @@ mkdir -p files/etc
 	echo "BATMAN_BOARD_PATCHES=$NP:$PD"
 	echo "BATMAN_FEATURES=$(get BATMAN_FEATURES)"
 	echo "BATMAN_NOTE=$(get BATMAN_NOTE)"
+	[ -z "$WBOX" ] || echo "BATMAN_WBOX=$WBOX"
 } > files/etc/batman-build
 printf '%s
 ' "$WIT" | grep . > files/etc/batman-patch-witness || : > files/etc/batman-patch-witness

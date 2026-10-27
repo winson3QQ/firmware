@@ -4,6 +4,7 @@
 # winson3QQ/Batman (also checked out at feeds/batman/docs/boards-and-builds.md).
 #
 #   scripts/build-board.sh <board> [--update-lock] [-j N]      as the tree owner: build + OTA payload
+#   scripts/build-board.sh <board> --wbox NAME [-j N]          a #254 test variant (Batman tests/wbox/NAME.patch)
 #   scripts/build-board.sh <board> --card-only                 AS ROOT, after a build: the card image
 #
 #     <board>        ekh-bcm2711 (Pi 4) | ekh-bcm2710 (Pi 3A+)
@@ -35,12 +36,13 @@
 set -euo pipefail
 
 BOARD=${1:-}; shift || true
-UPDATE_LOCK=0; CARD_ONLY=0; JOBS=$(nproc)
+UPDATE_LOCK=0; CARD_ONLY=0; JOBS=$(nproc); WBOX=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--update-lock) UPDATE_LOCK=1 ;;
 		--card-only) CARD_ONLY=1 ;;
 		-j) shift; JOBS=${1:?-j needs a number} ;;
+		--wbox) shift; WBOX=${1:?--wbox needs a variant name} ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac; shift
 done
@@ -103,6 +105,26 @@ if [ "$CARD_ONLY" = 0 ]; then
 	sh scripts/check-batman-adv-source.sh
 	sh scripts/check-golang-rules.sh >&2 || { echo "golang rules still not synced after setup" >&2; exit 1; }
 
+	# #254 (Batman 254-h23 §4.2, §15.5): a -wbox test variant = this build plus one mutant patch from the pinned
+	# Batman feed (tests/wbox/NAME.patch), applied AFTER setup (-i resets feeds/) and always undone on exit.
+	# helpers.list decides the prov_test tag (one source; lint-wbox keeps it equal to the patch contents).
+	if [ -n "$WBOX" ]; then
+		case "$WBOX" in *[!a-z0-9-]*) echo "bad --wbox name '$WBOX'" >&2; exit 1 ;; esac
+		WL=feeds/batman/tests/wbox/helpers.list
+		[ -f "$WL" ] || { echo "no $WL in the pinned Batman feed — cannot build -wbox variants" >&2; exit 1; }
+		read -r _ WTAG _ < <(awk -v n="$WBOX" '$1 == n' "$WL")
+		[ -n "${WTAG:-}" ] || { echo "$WBOX is not in $WL" >&2; exit 1; }
+		trap 'git -C feeds/batman checkout -q -- . && git -C feeds/batman clean -qfdx' EXIT
+		if [ "$WBOX" != test ]; then
+			WP=tests/wbox/$WBOX.patch
+			[ -f "feeds/batman/$WP" ] || { echo "no feeds/batman/$WP" >&2; exit 1; }
+			git -C feeds/batman apply --check "$WP" && git -C feeds/batman apply "$WP" || { echo "wbox patch $WP does not apply" >&2; exit 1; }
+		fi
+		export BATMAN_WBOX=$WBOX
+		[ "$WTAG" = prov_test ] && export BATMAN_PROV_TEST=1
+		echo "wbox variant $WBOX (tag $WTAG): applied; feeds/batman is restored on exit"
+	fi
+
 	say "3 config lock"
 	LOCK=boards/$BOARD/batman-config.lock
 	if [ "$UPDATE_LOCK" = 1 ]; then
@@ -138,6 +160,13 @@ if [ "$CARD_ONLY" = 0 ]; then
 		for p in $GOPKGS; do make "package/$p/clean" > "logs/goclean-$BOARD-$p.log" 2>&1 || { tail -20 "logs/goclean-$BOARD-$p.log" >&2; exit 1; }; done
 		echo "$GOSUM" > "$GOSTAMP.pending"
 	fi
+	# #254: the prov_test tag / a mutant reaches the Go package only through env + patched files, which OpenWrt's
+	# rebuild hash does not see (env) or sees only by mtime: clean both packages whenever the variant changes.
+	WBSTAMP=logs/wbox-$BOARD.stamp; WBNOW="${WBOX:-none}|${BATMAN_PROV_TEST:-0}"
+	if [ "$(cat "$WBSTAMP" 2>/dev/null)" != "$WBNOW" ]; then
+		echo "wbox variant changed ($(cat "$WBSTAMP" 2>/dev/null || echo unknown) -> $WBNOW): cleaning batman-prov, batman-provision"
+		for p in batman-prov batman-provision; do make "package/$p/clean" > "logs/wbclean-$BOARD-$p.log" 2>&1 || { tail -20 "logs/wbclean-$BOARD-$p.log" >&2; exit 1; }; done
+	fi
 	if ! make -j"$JOBS" > "logs/build-$BOARD.log" 2>&1; then
 		echo "make failed — retrying -j1 V=s (parallel-build races happen; logs/build-$BOARD-v.log)" >&2
 		make -j1 V=s > "logs/build-$BOARD-v.log" 2>&1 || { tail -40 "logs/build-$BOARD-v.log" >&2; exit 1; }
@@ -150,6 +179,7 @@ if [ "$CARD_ONLY" = 0 ]; then
 	CPU=$([ "$SOC" = bcm2711 ] && echo a72 || echo a53)
 	sh scripts/check-go-toolchain.sh "build_dir/target-aarch64_cortex-${CPU}_musl/root-bcm27xx"
 	[ ! -f "logs/go-rules-$BOARD.stamp.pending" ] || mv "logs/go-rules-$BOARD.stamp.pending" "logs/go-rules-$BOARD.stamp"
+	echo "$WBNOW" > "$WBSTAMP"
 fi
 
 [ -f "$STAMP" ] || { echo "no $STAMP — build this board first (without --card-only)" >&2; exit 1; }
@@ -170,6 +200,8 @@ cmp -s "$WR/r/etc/batman-patch-witness" <(sh scripts/patch-witness.sh list "$BOA
 sh scripts/patch-witness.sh check "$BOARD" "$WR/r" "$(ls "$BT"/*.manifest | head -1)" || { rm -rf "$WR"; exit 1; }
 # #254: EEPROM persistent vars stay unread (the files/ shim, not the Morse reader, is in this rootfs)
 bash scripts/check-pvs-shim.sh "$WR/r" || { rm -rf "$WR"; exit 1; }
+# #254: the helper's test seams are absent from a normal build and really present in a -wbox variant
+bash scripts/check-prov-test-gate.sh "$WR/r" ${WBOX:+"$WBOX"} || { rm -rf "$WR"; exit 1; }
 rm -rf "$WR"
 
 if [ "$CARD_ONLY" = 0 ]; then
