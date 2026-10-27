@@ -17,6 +17,8 @@ on:
     - 'scripts/check-board-patches.sh'
     - 'scripts/board-patch-digest.sh'
     - 'scripts/patch-witness.sh'
+    - 'scripts/check-prov-test-gate.sh'
+    - 'scripts/test-prov-test-gate.sh'
     - 'scripts/stamp-batman-build.sh'
 
 jobs:

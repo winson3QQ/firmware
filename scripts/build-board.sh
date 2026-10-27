@@ -46,10 +46,15 @@ while [ $# -gt 0 ]; do
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac; shift
 done
+# #254: BATMAN_WBOX / BATMAN_PROV_TEST come from --wbox only, never from the calling shell (code review A-M2)
+unset BATMAN_WBOX BATMAN_PROV_TEST
+if [ -n "$WBOX" ] && { [ "$CARD_ONLY" = 1 ] || [ "$UPDATE_LOCK" = 1 ]; }; then
+	echo "--wbox builds an OTA payload only: not with --card-only (a wbox card would boot a test variant committed) or --update-lock" >&2; exit 2
+fi
 case "$BOARD" in
 	ekh-bcm2711) SUB=bcm2711; SOC=bcm2711 ;;
 	ekh-bcm2710) SUB=bcm2710; SOC=bcm2710 ;;
-	*) echo "usage: build-board.sh <ekh-bcm2711|ekh-bcm2710> [--update-lock | --card-only] [-j N]" >&2; exit 2 ;;
+	*) echo "usage: build-board.sh <ekh-bcm2711|ekh-bcm2710> [--update-lock | --card-only | --wbox NAME] [-j N]" >&2; exit 2 ;;
 esac
 TOP=$(pwd)
 [ -f scripts/openmanet_setup.sh ] && [ -f batman-release.env ] || { echo "run from the firmware tree root" >&2; exit 2; }
@@ -112,8 +117,17 @@ if [ "$CARD_ONLY" = 0 ]; then
 		case "$WBOX" in *[!a-z0-9-]*) echo "bad --wbox name '$WBOX'" >&2; exit 1 ;; esac
 		WL=feeds/batman/tests/wbox/helpers.list
 		[ -f "$WL" ] || { echo "no $WL in the pinned Batman feed — cannot build -wbox variants" >&2; exit 1; }
-		read -r _ WTAG _ < <(awk -v n="$WBOX" '$1 == n' "$WL")
-		[ -n "${WTAG:-}" ] || { echo "$WBOX is not in $WL" >&2; exit 1; }
+		WTAG=$(awk -v n="$WBOX" '$1 == n { print $2; exit }' "$WL")
+		[ -n "$WTAG" ] || { echo "$WBOX is not in $WL" >&2; exit 1; }
+		case "$WTAG" in prov_test|release) ;; *) echo "$WL: tag '$WTAG' for $WBOX (want prov_test or release)" >&2; exit 1 ;; esac
+		# the patch goes onto a CLEAN feed and the trap restores it: a leftover mutant (a build killed with SIGKILL
+		# skips the trap) or uncommitted work in feeds/batman would be stacked under / wiped by this variant (B-M1)
+		WD=$(git -C feeds/batman status --porcelain --ignored)
+		if [ -n "$WD" ]; then
+			echo "feeds/batman is not clean — refusing to apply a wbox patch onto it (commit / stash your work, or" >&2
+			echo "  git -C feeds/batman checkout -- . && git -C feeds/batman clean -fdx  after checking what goes):" >&2
+			printf '%s\n' "$WD" | head -20 >&2; exit 1
+		fi
 		trap 'git -C feeds/batman checkout -q -- . && git -C feeds/batman clean -qfdx' EXIT
 		if [ "$WBOX" != test ]; then
 			WP=tests/wbox/$WBOX.patch
@@ -166,6 +180,7 @@ if [ "$CARD_ONLY" = 0 ]; then
 	if [ "$(cat "$WBSTAMP" 2>/dev/null)" != "$WBNOW" ]; then
 		echo "wbox variant changed ($(cat "$WBSTAMP" 2>/dev/null || echo unknown) -> $WBNOW): cleaning batman-prov, batman-provision"
 		for p in batman-prov batman-provision; do make "package/$p/clean" > "logs/wbclean-$BOARD-$p.log" 2>&1 || { tail -20 "logs/wbclean-$BOARD-$p.log" >&2; exit 1; }; done
+		echo "in-progress:$WBNOW" > "$WBSTAMP"   # an interrupted build of this variant cleans again next time
 	fi
 	if ! make -j"$JOBS" > "logs/build-$BOARD.log" 2>&1; then
 		echo "make failed — retrying -j1 V=s (parallel-build races happen; logs/build-$BOARD-v.log)" >&2
