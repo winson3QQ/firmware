@@ -62,7 +62,7 @@ mk(){ local d=$T/$1 h=$2 v=$3 wb=${4:-} i=0; shift 3; [ $# -gt 0 ] && shift
   echo $d; }
 pass=0; bad=0
 # want PASS <case> <args...> | want FAIL:<reason substring> <case> <args...>
-want(){ local exp=$1 name=$2; shift 2; out=$(env -u GO -u WBOX_DIR bash $G "$@" --selftest-wbox-dir $T/wbox --selftest-go $GO 2>&1); rc=$?
+want(){ local exp=$1 name=$2; shift 2; out=$(env -u GO -u WBOX_DIR timeout 30 bash $G "$@" --selftest-wbox-dir $T/wbox --selftest-go $GO 2>&1); rc=$?
   case "$exp" in
 	PASS) [ $rc = 0 ] && ok=1 || ok=0 ;;
 	FAIL:*) [ $rc != 0 ] && case "$out" in *"${exp#FAIL:}"*) ok=1 ;; *) ok=0 ;; esac || ok=0 ;;
@@ -98,7 +98,7 @@ want FAIL:"names a wbox variant"  "normal build, version names a wbox variant" $
 want FAIL:"point names"           "normal build, point names only"       $(mk r8 $T/h-names $V)
 d=$(mk r9 $T/h-rel $V); rm $d/usr/bin/batman-provhelper; ln -s $T/h-rel $d/usr/bin/batman-provhelper
 want FAIL:"is a symlink"          "normal build, helper is an absolute symlink to a host file" $d
-d=$(mk ra $T/h-rel $V); out=$(bash $G $d --selftest-go $T/no-go 2>&1); rc=$?
+d=$(mk ra $T/h-rel $V); out=$(timeout 30 bash $G $d --selftest-go $T/no-go 2>&1); rc=$?
 case "$out" in *"cannot read its build info"*) [ $rc != 0 ] && { pass=$((pass+1)); echo "ok   ELF helper but no host Go — $out"; } || { bad=$((bad+1)); echo "BAD  ELF/no Go rc=$rc $out"; } ;; *) bad=$((bad+1)); echo "BAD  ELF/no Go: $out" ;; esac
 want FAIL:"bad wbox name"         "wbox name with bad characters"        $(mk rb $T/h-pt $V.dirty.wbox-Bad_Name Bad_Name) Bad_Name
 want FAIL:"without the marker"    "wbox test, prov_test helper without the marker" $(mk rc $T/h-nomark $V.dirty.wbox-test test) test
@@ -118,7 +118,7 @@ mkdir -p $T/nostrings; for t in sed awk grep head sort tr ls dirname cat; do ln 
 d=$(mk rn $T/h-rel $V); out=$(PATH=$T/nostrings $(command -v bash) $G $d --selftest-go $GO 2>&1); rc=$?
 case "$out" in *"no strings(1)"*) [ $rc != 0 ] && { pass=$((pass+1)); echo "ok   no strings(1) on the host — $out"; } || { bad=$((bad+1)); echo "BAD  no strings rc=$rc"; } ;; *) bad=$((bad+1)); echo "BAD  no strings: rc=$rc $out" ;; esac
 want FAIL:"BATMAN_WBOX=[test], want chan" "BATMAN_WBOX line names another variant" $(mk ro $T/h-rel $V.dirty.wbox-chan test WBOX-chan-11223344 S99wbox-chan.rcd) chan
-d=$(mk rp $T/h-pt $V.dirty.wbox-test test); out=$(bash $G $d test --selftest-wbox-dir $T/no-such-dir --selftest-go $GO 2>&1); rc=$?
+d=$(mk rp $T/h-pt $V.dirty.wbox-test test); out=$(timeout 30 bash $G $d test --selftest-wbox-dir $T/no-such-dir --selftest-go $GO 2>&1); rc=$?
 case "$out" in *"no $T/no-such-dir/helpers.list"*) [ $rc != 0 ] && { pass=$((pass+1)); echo "ok   no helpers.list — $out"; } || { bad=$((bad+1)); echo "BAD  no helpers.list rc=$rc"; } ;; *) bad=$((bad+1)); echo "BAD  no helpers.list: rc=$rc $out" ;; esac
 want FAIL:"prov_test variant but the helper is not a Go binary" "prov_test variant with a shell-script helper" $(mk rq $T/h-sh $V.dirty.wbox-test test) test
 want FAIL:"FAIL: no $T/wbox/nopatch.patch"         "helpers.list entry without a patch"   $(mk rr $T/h-rel $V.dirty.wbox-nopatch nopatch) nopatch
@@ -133,9 +133,9 @@ want FAIL:"unknown option --bogus" "unknown --option"                  $(mk rw $
 mkdir -p $T/decoy; printf 'test release same\n' > $T/decoy/helpers.list
 printf '#!/bin/sh\ntouch %s/go-sentinel\nexit 0\n' "$T" > $T/sentinel-go; chmod 755 $T/sentinel-go
 d=$(mk rx $T/h-pt $V.dirty.wbox-test test)
-a=$(env -u GO -u WBOX_DIR bash $G $d test --selftest-wbox-dir $T/wbox --selftest-go $GO 2>&1; echo "rc=$?")
-b=$(env GO=$T/sentinel-go WBOX_DIR=$T/decoy bash $G $d test --selftest-wbox-dir $T/wbox --selftest-go $GO 2>&1; echo "rc=$?")
-c2=$(env GO=$T/sentinel-go WBOX_DIR=$T/decoy bash $G $(mk ry $T/h-rel $V) 2>&1; echo "rc=$?")
+a=$(env -u GO -u WBOX_DIR timeout 30 bash $G $d test --selftest-wbox-dir $T/wbox --selftest-go $GO 2>&1; echo "rc=$?")
+b=$(env GO=$T/sentinel-go WBOX_DIR=$T/decoy timeout 30 bash $G $d test --selftest-wbox-dir $T/wbox --selftest-go $GO 2>&1; echo "rc=$?")
+c2=$(env GO=$T/sentinel-go WBOX_DIR=$T/decoy timeout 30 bash $G $(mk ry $T/h-rel $V) 2>&1; echo "rc=$?")
 if [ "$a" = "$b" ] && [ ! -e $T/go-sentinel ] && ! echo "$c2" | grep -q 'helpers.list'; then pass=$((pass+1)); echo "ok   F5: GO / WBOX_DIR in the environment are ignored (output identical, sentinel never run)"; else bad=$((bad+1)); echo "BAD  F5: env changed the gate — a=[$a] b=[$b] c=[$c2] sentinel=$([ -e $T/go-sentinel ] && echo CREATED)"; fi
 # --selftest-* is passed only by this self-test (the gate parses it): no other script may pass it
 hits=$(grep -rln -- '--selftest-' $FW/scripts $FW/.github 2>/dev/null | grep -v -e 'scripts/check-prov-test-gate.sh$' -e 'scripts/test-prov-test-gate.sh$' || true)
@@ -152,10 +152,31 @@ want PASS "normal build without the node gate strings (the gate is only required
 # the decoy lists the variant, the tree's own list does not; the gate must not read the decoy
 mkdir -p $T/decoy2; printf 'decoyonly release same\n' > $T/decoy2/helpers.list; printf '# wbox decoyonly: x\n# wbox-witness: WBOX-decoyonly-0e0e0e0e\n' > $T/decoy2/decoyonly.patch
 d=$(mk rd $T/h-rel $V.dirty.wbox-decoyonly decoyonly WBOX-decoyonly-0e0e0e0e)
-a=$(env -u WBOX_DIR -u GO bash $G $d decoyonly --selftest-go $GO 2>&1; echo "rc=$?")
-b=$(env WBOX_DIR=$T/decoy2 GO=$T/sentinel-go bash $G $d decoyonly --selftest-go $GO 2>&1; echo "rc=$?")
+a=$(env -u WBOX_DIR -u GO timeout 30 bash $G $d decoyonly --selftest-go $GO 2>&1; echo "rc=$?")
+b=$(env WBOX_DIR=$T/decoy2 GO=$T/sentinel-go timeout 30 bash $G $d decoyonly --selftest-go $GO 2>&1; echo "rc=$?")
 if [ "$a" = "$b" ] && ! grep -q 'check-prov-test-gate: ok' <<< "$b" && [ ! -e $T/go-sentinel ]; then pass=$((pass+1)); echo "ok   F5 WBOX_DIR: a decoy WBOX_DIR in the environment is not read (wbox mode, no option): $(echo "$b" | head -1)"
 else bad=$((bad+1)); echo "BAD  F5 WBOX_DIR: env changed the wbox-mode gate — a=[$a] b=[$b]"; fi
+# ---- §23.5 negative control: a gate mutant that takes WBOX_DIR / GO from the environment again (the old
+# `WD=${WBOX_DIR:-…}` / `GO=${GO:-…}`). Built under $T/mut/scripts (never in the tree); both F5 comparisons above, run
+# against it, must see the environment win.
+mkdir -p $T/mut/scripts
+awk 'NR == 2 { print "ENV_GO=${GO:-}; ENV_WD=${WBOX_DIR:-}   # MUTANT" } { print }
+	/^GO=\$\{OPT_GO:-/ { print "[ -n \"$ENV_GO\" ] && GO=$ENV_GO   # MUTANT" }
+	/^WD=\$\{OPT_WD:-/ { print "[ -n \"$ENV_WD\" ] && WD=$ENV_WD   # MUTANT" }' $G > $T/mut/scripts/check-prov-test-gate.sh
+GM=$T/mut/scripts/check-prov-test-gate.sh
+if [ "$(grep -c '# MUTANT' $GM)" != 3 ]; then bad=$((bad+1)); echo "BAD  gate mutant not built (the GO= / WD= lines moved?) — $(grep -c '# MUTANT' $GM) of 3 lines"
+else
+	rm -f $T/go-sentinel; d=$(mk mx $T/h-pt $V.dirty.wbox-test test)
+	a=$(env -u GO -u WBOX_DIR timeout 30 bash $GM $d test --selftest-wbox-dir $T/wbox --selftest-go $GO 2>&1; echo "rc=$?")
+	c2=$(env GO=$T/sentinel-go WBOX_DIR=$T/decoy timeout 30 bash $GM $(mk my $T/h-rel $V) 2>&1; echo "rc=$?")
+	if [ -e $T/go-sentinel ] || echo "$c2" | grep -q 'helpers.list'; then pass=$((pass+1)); echo "ok   gate mutant (GO / WBOX_DIR from the environment): the F5 check sees it (sentinel $([ -e $T/go-sentinel ] && echo run || echo 'not run'), decoy $(echo "$c2" | grep -q 'helpers.list' && echo read || echo 'not read'))"
+	else bad=$((bad+1)); echo "BAD  gate mutant not caught by F5 — c=[$c2]"; fi
+	rm -f $T/go-sentinel; d=$(mk md $T/h-rel $V.dirty.wbox-decoyonly decoyonly WBOX-decoyonly-0e0e0e0e)
+	a=$(env -u WBOX_DIR -u GO timeout 30 bash $GM $d decoyonly --selftest-go $GO 2>&1; echo "rc=$?")
+	b=$(env WBOX_DIR=$T/decoy2 GO=$T/sentinel-go timeout 30 bash $GM $d decoyonly --selftest-go $GO 2>&1; echo "rc=$?")
+	if [ "$a" != "$b" ]; then pass=$((pass+1)); echo "ok   gate mutant: the F5 WBOX_DIR check sees the decoy win (outputs differ)"
+	else bad=$((bad+1)); echo "BAD  gate mutant not caught by the F5 WBOX_DIR check — a=[$a] b=[$b]"; fi
+fi
 # ---- review A-M3: scripts/gate-rootfs.sh (local-ab-tar / fast-build / build-board step 7) on real squashfs images
 GR=$FW/scripts/gate-rootfs.sh
 TGO=$FW/staging_dir/hostpkg/lib/go-$(sed -n 's/^GO_DEFAULT_VERSION:=//p' $FW/feeds/openmanet/lang/golang/golang-values.mk 2>/dev/null | head -1)/bin/go
@@ -163,7 +184,7 @@ TGO=$FW/staging_dir/hostpkg/lib/go-$(sed -n 's/^GO_DEFAULT_VERSION:=//p' $FW/fee
 MKSQ=$FW/staging_dir/host/bin/mksquashfs4; command -v mksquashfs >/dev/null && MKSQ=mksquashfs
 if [ ! -x "$MKSQ" ] && ! command -v "$MKSQ" >/dev/null; then bad=$((bad+1)); echo "BAD  no mksquashfs (host or staging_dir) — the gate-rootfs cases cannot run"; else
 sq(){ "$MKSQ" "$1" "$2" -all-root -noappend -quiet >/dev/null 2>&1 || { echo "mksquashfs $1 failed"; exit 1; }; }
-gr(){ local exp=$1 name=$2; shift 2; out=$(bash $GR "$@" 2>&1); rc=$?
+gr(){ local exp=$1 name=$2; shift 2; out=$(timeout 30 bash $GR "$@" 2>&1); rc=$?
 	case "$exp" in PASS) [ $rc = 0 ] && ok=1 || ok=0 ;; *) [ $rc != 0 ] && case "$out" in *"${exp#FAIL:}"*) ok=1 ;; *) ok=0 ;; esac || ok=0 ;; esac
 	if [ $ok = 1 ]; then pass=$((pass+1)); echo "ok   gate-rootfs: $name — $(echo "$out" | tail -1)"; else bad=$((bad+1)); echo "BAD  gate-rootfs want $exp: $name — rc=$rc $(echo "$out" | tr '\n' ' ' | cut -c1-200)"; fi; }
 sq "$(mk sqa $T/h-rel $V)" $T/a.sq;                               gr PASS "normal squashfs, release helper" $T/a.sq
@@ -174,7 +195,7 @@ sq "$(mk sqd $T/h-pt $V.dirty.wbox-test test)" $T/d.sq;           gr FAIL:"carri
 # an extraction that misses a file: unsquashfs on PATH that drops one regular file after extracting
 mkdir -p $T/stubus; RUS=$FW/staging_dir/host/bin/unsquashfs4; command -v unsquashfs >/dev/null && RUS=$(command -v unsquashfs)
 printf '%s\n' '#!/bin/bash' "\"$RUS\" \"\$@\"; r=\$?" 'd=""; prev=""; for a in "$@"; do [ "$prev" = -d ] && d=$a; prev=$a; done' '[ -n "$d" ] && f=$(find "$d" -type f | head -1) && [ -n "$f" ] && rm -f "$f"' 'exit $r' > $T/stubus/unsquashfs; chmod 755 $T/stubus/unsquashfs
-out=$(PATH=$T/stubus:$PATH bash $GR $T/a.sq 2>&1); rc=$?
+out=$(PATH=$T/stubus:$PATH timeout 30 bash $GR $T/a.sq 2>&1); rc=$?
 [ $rc != 0 ] && grep -q "extraction incomplete" <<< "$out" && { pass=$((pass+1)); echo "ok   gate-rootfs: an extraction that missed a file -> FAIL ($out)"; } || { bad=$((bad+1)); echo "BAD  gate-rootfs: incomplete extraction not caught — rc=$rc $out"; }
 gr FAIL:"no squashfs" "missing squashfs" $T/none.sq
 fi
