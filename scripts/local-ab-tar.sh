@@ -68,17 +68,9 @@ echo "rootfs: $ROOTSQ ($(wc -c < "$T/root.squashfs") B; image p2 header says $SQ
 [ "$(wc -c < "$T/root.squashfs")" = "$SQBYTES" ] || { echo "pristine rootfs size differs from the image's p2 bytes_used" >&2; exit 1; }
 
 # #254 (security review F2): the test-seam gate on exactly the squashfs this payload ships — whoever runs this
-# script (build-board.sh step 8, wsl-build.sh, by hand). The variant name comes from the image's own stamp:
-# no BATMAN_WBOX = a normal build, every seam rule applies; a -wbox image is held to its variant's rules (and the
-# node refuses to commit or roll back to it). An extraction that missed a regular file is a FAIL, not a pass.
-US=$TOP/staging_dir/host/bin/unsquashfs4; command -v unsquashfs >/dev/null && US=unsquashfs
-"$US" -q -no-xattrs -f -d "$T/gr" "$T/root.squashfs" >/dev/null 2>&1 || true
-nlist=$("$US" -lls "$T/root.squashfs" | grep -c '^-') || true
-nfound=$(find "$T/gr" -type f | wc -l)
-[ "$nlist" -gt 0 ] && [ "$nfound" = "$nlist" ] || { echo "rootfs extraction for the test-seam gate is incomplete ($nfound of $nlist regular files)" >&2; exit 1; }
-WB=$(sed -n 's/^BATMAN_WBOX=//p' "$T/gr/etc/batman-build" 2>/dev/null | head -1)
-bash "$TOP/scripts/check-prov-test-gate.sh" "$T/gr" ${WB:+"$WB"}
-rm -rf "$T/gr"
+# script (build-board.sh step 8, wsl-build.sh, by hand); the variant name comes from the image's own stamp, an
+# incomplete extraction is a FAIL (scripts/gate-rootfs.sh)
+bash "$TOP/scripts/gate-rootfs.sh" "$T/root.squashfs"
 
 # boot: carve the FAT partition and extract rootless with mtools
 dd if="$T/disk.img" of="$T/boot.fat" bs=1M iflag=skip_bytes,count_bytes \
