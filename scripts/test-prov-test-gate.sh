@@ -158,6 +158,8 @@ if [ "$a" = "$b" ] && ! grep -q 'check-prov-test-gate: ok' <<< "$b" && [ ! -e $T
 else bad=$((bad+1)); echo "BAD  F5 WBOX_DIR: env changed the wbox-mode gate — a=[$a] b=[$b]"; fi
 # ---- review A-M3: scripts/gate-rootfs.sh (local-ab-tar / fast-build / build-board step 7) on real squashfs images
 GR=$FW/scripts/gate-rootfs.sh
+TGO=$FW/staging_dir/hostpkg/lib/go-$(sed -n 's/^GO_DEFAULT_VERSION:=//p' $FW/feeds/openmanet/lang/golang/golang-values.mk 2>/dev/null | head -1)/bin/go
+[ -x "$TGO" ] || { bad=$((bad+1)); echo "BAD  the gate-rootfs cases need the tree's own Go ($TGO): gate-rootfs.sh takes no --selftest-go — run in a built firmware tree (review r2 B-n1)"; }
 MKSQ=$FW/staging_dir/host/bin/mksquashfs4; command -v mksquashfs >/dev/null && MKSQ=mksquashfs
 if [ ! -x "$MKSQ" ] && ! command -v "$MKSQ" >/dev/null; then bad=$((bad+1)); echo "BAD  no mksquashfs (host or staging_dir) — the gate-rootfs cases cannot run"; else
 sq(){ "$MKSQ" "$1" "$2" -all-root -noappend -quiet >/dev/null 2>&1 || { echo "mksquashfs $1 failed"; exit 1; }; }
@@ -178,13 +180,13 @@ gr FAIL:"no squashfs" "missing squashfs" $T/none.sq
 fi
 # structural: every payload path calls gate-rootfs.sh before it packs / uploads
 LAT=$FW/scripts/local-ab-tar.sh; FB=$FW/.github/workflows/fast-build.yml; BB=$FW/scripts/build-board.sh
-g=$(grep -n 'scripts/gate-rootfs.sh" "$T/root.squashfs"' $LAT | head -1 | cut -d: -f1); p=$(grep -n '^sh "$PAYLOAD_SH"' $LAT | head -1 | cut -d: -f1)
+g=$(grep -nE '^bash "\$TOP/scripts/gate-rootfs\.sh" "\$T/root\.squashfs"$' $LAT | head -1 | cut -d: -f1); p=$(grep -n '^sh "$PAYLOAD_SH"' $LAT | head -1 | cut -d: -f1)   # the whole line (r2 A-m1)
 [ -n "$g" ] && [ -n "$p" ] && [ "$g" -lt "$p" ] && { pass=$((pass+1)); echo "ok   local-ab-tar gates the rootfs (line $g) before it packs (line $p)"; } || { bad=$((bad+1)); echo "BAD  local-ab-tar: gate line [$g] not before the pack line [$p]"; }
 st=$(awk '/^      - name: /{n=$0} /gate-rootfs.sh root.squashfs --normal/{print n; exit}' $FB)
-up=$(grep -n '^      - name: Upload build artifacts$' $FB | cut -d: -f1); gl=$(grep -n 'gate-rootfs.sh root.squashfs --normal' $FB | head -1 | cut -d: -f1)
+up=$(grep -n '^      - name: Upload build artifacts$' $FB | cut -d: -f1); gl=$(grep -nE '^          bash scripts/gate-rootfs\.sh root\.squashfs --normal$' $FB | head -1 | cut -d: -f1)
 blk=$(awk -v s="$st" '$0==s{f=1;next} f && /^      - name: /{exit} f' $FB)
 [ -n "$st" ] && [ -n "$gl" ] && [ "$gl" -lt "${up:-0}" ] && ! grep -q 'continue-on-error' <<< "$blk" && { pass=$((pass+1)); echo "ok   fast-build: gate step ($st) before the upload, without continue-on-error"; } || { bad=$((bad+1)); echo "BAD  fast-build gate step [$st] line [$gl] upload [$up] coe=[$(grep -c continue-on-error <<< "$blk")]"; }
-e=$(grep -n 'scripts/gate-rootfs.sh --extract "$ROOTSQ" "$WR/r"' $BB | head -1 | cut -d: -f1); c=$(grep -n 'bash scripts/check-prov-test-gate.sh "$WR/r"' $BB | head -1 | cut -d: -f1)
+e=$(grep -nE '^WR=\$\(mktemp -d\); bash scripts/gate-rootfs\.sh --extract "\$ROOTSQ" "\$WR/r" \|\| \{ rm -rf "\$WR"; exit 1; \}$' $BB | head -1 | cut -d: -f1); c=$(grep -n 'bash scripts/check-prov-test-gate.sh "$WR/r"' $BB | head -1 | cut -d: -f1)
 [ -n "$e" ] && [ -n "$c" ] && [ "$e" -lt "$c" ] && ! grep -q 'unsquashfs4\?" -q -no-xattrs -f -d "$WR/r"' $BB && { pass=$((pass+1)); echo "ok   build-board step 7 extracts through gate-rootfs.sh --extract (line $e) before its gates (line $c)"; } || { bad=$((bad+1)); echo "BAD  build-board step 7: extract [$e] gate [$c] (or an own unsquashfs extraction is back)"; }
 want FAIL:"not extracted"         "no rootfs"                            $T/missing
 echo "RESULT gate self-test: $pass ok, $bad bad"; [ $bad = 0 ] && [ $pass -gt 0 ]
