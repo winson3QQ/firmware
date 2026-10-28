@@ -96,6 +96,23 @@ o=$(nc); case "$o" in *"still carries a wbox mutant"*ignored-w*) res 1 "normal b
 rm -f $F/ignored-w; echo dev >> $F/feed/batman-provision/files/etc/init.d/keep; echo x > $F/untracked-dev
 o=$(nc); [ "$o" = NORMAL-OK ] && res 1 "normal build: other uncommitted work allowed" || res 0 "normal build: other work" "$o"
 git -C $F checkout -q -- .; git -C $F clean -qfdx
+# F4: a staged mutant (git add takes it off -m / -o), a staged new file, a non-ASCII and a newline file name, an
+# unreadable file — each refused
+git -C $F apply tests/wbox/helper-notrial.patch; git -C $F add -A feed
+o=$(nc); case "$o" in *"still carries a wbox mutant"*keep*) res 1 "normal build: staged tracked mutant -> refused" ;; *) res 0 "normal build: staged tracked mutant" "$o" ;; esac
+git -C $F reset -q; git -C $F checkout -q -- .; git -C $F apply tests/wbox/chan.patch; git -C $F add -A feed
+o=$(nc); case "$o" in *"still carries a wbox mutant"*wbox-chan*) res 1 "normal build: staged new mutant -> refused" ;; *) res 0 "normal build: staged new mutant" "$o" ;; esac
+git -C $F reset -q; git -C $F clean -qfdx
+echo WBOX-chan-11223344 > "$F/feed/batman-provision/files/wbox-ü"
+o=$(nc); case "$o" in *"still carries a wbox mutant"*wbox-*) res 1 "normal build: non-ASCII file name with a witness -> refused" ;; *) res 0 "normal build: non-ASCII name" "$o" ;; esac
+git -C $F clean -qfdx; echo WBOX-chan-11223344 > "$F/feed/batman-provision/files/wbox-a
+b"
+o=$(nc); case "$o" in *"still carries a wbox mutant"*wbox-a*) res 1 "normal build: file name with a newline -> refused" ;; *) res 0 "normal build: newline name" "$o" ;; esac
+git -C $F clean -qfdx
+if [ "$(id -u)" = 0 ]; then echo "skip unreadable-file case as root"; else
+echo x > $F/untracked-ro; chmod 000 $F/untracked-ro; o=$(nc); chmod 644 $F/untracked-ro; rm -f $F/untracked-ro
+case "$o" in *"cannot read"*) res 1 "normal build: unreadable changed file -> refused" ;; *) res 0 "normal build: unreadable file" "$o" ;; esac; fi
+clean && res 1 "feed clean after the F4 cases" || res 0 "feed clean after F4" "$(git -C $F status --porcelain --ignored | tr '\n' ' ')"
 for sig in TERM INT HUP; do
 	# like build-board.sh under a terminal: no trap but the lib's EXIT trap, the long step (here sleep, there make) in
 	# the FOREGROUND, the job in its own process group with SIGINT/SIGTERM at their defaults, and the signal sent to the

@@ -12,7 +12,8 @@
 #
 # <firmware_top> defaults to $PWD (run it from the firmware tree root, or after `make`).
 # <board> defaults to ekh-bcm2711. Before packing, the built manifest must pass
-# scripts/check-image-manifest.sh (brcmfmac/43455, mm6108, batman packages — the 1.4.12 lesson).
+# scripts/check-image-manifest.sh (brcmfmac/43455, mm6108, batman packages — the 1.4.12 lesson), and its
+# rootfs must pass scripts/check-prov-test-gate.sh (#254).
 set -eu
 
 TOP=${1:-$PWD}
@@ -65,6 +66,19 @@ ROOTSQ=$(cd "$TOP" && sh scripts/pick-rootfs.sh "$BOARD")
 cp "$TOP/$ROOTSQ" "$T/root.squashfs"
 echo "rootfs: $ROOTSQ ($(wc -c < "$T/root.squashfs") B; image p2 header says $SQBYTES B)"
 [ "$(wc -c < "$T/root.squashfs")" = "$SQBYTES" ] || { echo "pristine rootfs size differs from the image's p2 bytes_used" >&2; exit 1; }
+
+# #254 (security review F2): the test-seam gate on exactly the squashfs this payload ships — whoever runs this
+# script (build-board.sh step 8, wsl-build.sh, by hand). The variant name comes from the image's own stamp:
+# no BATMAN_WBOX = a normal build, every seam rule applies; a -wbox image is held to its variant's rules (and the
+# node refuses to commit or roll back to it). An extraction that missed a regular file is a FAIL, not a pass.
+US=$TOP/staging_dir/host/bin/unsquashfs4; command -v unsquashfs >/dev/null && US=unsquashfs
+"$US" -q -no-xattrs -f -d "$T/gr" "$T/root.squashfs" >/dev/null 2>&1 || true
+nlist=$("$US" -lls "$T/root.squashfs" | grep -c '^-') || true
+nfound=$(find "$T/gr" -type f | wc -l)
+[ "$nlist" -gt 0 ] && [ "$nfound" = "$nlist" ] || { echo "rootfs extraction for the test-seam gate is incomplete ($nfound of $nlist regular files)" >&2; exit 1; }
+WB=$(sed -n 's/^BATMAN_WBOX=//p' "$T/gr/etc/batman-build" 2>/dev/null | head -1)
+bash "$TOP/scripts/check-prov-test-gate.sh" "$T/gr" ${WB:+"$WB"}
+rm -rf "$T/gr"
 
 # boot: carve the FAT partition and extract rootless with mtools
 dd if="$T/disk.img" of="$T/boot.fat" bs=1M iflag=skip_bytes,count_bytes \
