@@ -120,5 +120,7 @@ case "$out" in *"no $T/no-such-dir/helpers.list"*) [ $rc != 0 ] && { pass=$((pas
 want FAIL:"prov_test variant but the helper is not a Go binary" "prov_test variant with a shell-script helper" $(mk rq $T/h-sh $V.dirty.wbox-test test) test
 want FAIL:"FAIL: no $T/wbox/nopatch.patch"         "helpers.list entry without a patch"   $(mk rr $T/h-rel $V.dirty.wbox-nopatch nopatch) nopatch
 want FAIL:"has no '# wbox-witness:' line" "patch without a witness line" $(mk rs $T/h-rel $V.dirty.wbox-nowit nowit) nowit
+d=$(mk rt $T/h-rel $V); printf 'BATMAN_VERSION=%s\n' "$V" > $T/host-batman-build; rm $d/etc/batman-build; ln -s $T/host-batman-build $d/etc/batman-build
+want FAIL:"/etc/batman-build is a symlink" "batman-build is an absolute symlink to a host file" $d
 want FAIL:"not extracted"         "no rootfs"                            $T/missing
 echo "RESULT gate self-test: $pass ok, $bad bad"; [ $bad = 0 ] && [ $pass -gt 0 ]
