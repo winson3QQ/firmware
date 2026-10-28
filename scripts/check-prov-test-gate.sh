@@ -11,12 +11,28 @@
 #   in, not left in a _test.go file); a release variant's Go helper carries no seam at all (same rules as a normal
 #   build); an init mutant is enabled (etc/rc.d/S??wbox-*).
 # Any input that cannot be read is a FAIL, never a pass.
+#
+# Self-test overrides come ONLY as options (security review F5, design 254-h23 §20.5 / §23.5): environment variables
+# are inherited by every child, so the gate reads no WBOX_DIR / GO from the environment.
+#   --selftest-wbox-dir DIR   helpers.list + patches from DIR instead of feeds/batman/tests/wbox
+#   --selftest-go GO          this Go for `go version -m` instead of the tree's own
+# Any other --option is a FAIL (an option that looked like a variant name would pass the name check).
 set -u
-R=${1:?usage: check-prov-test-gate.sh ROOTFS_DIR [WBOX_NAME]}
-NAME=${2:-}
+fail(){ echo "check-prov-test-gate: FAIL: $*" >&2; exit 1; }
+POS=(); OPT_WD=""; OPT_GO=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--selftest-wbox-dir) [ $# -ge 2 ] || fail "--selftest-wbox-dir needs a dir"; OPT_WD=$2; shift 2 ;;
+		--selftest-go) [ $# -ge 2 ] || fail "--selftest-go needs a path"; OPT_GO=$2; shift 2 ;;
+		--*) fail "unknown option $1" ;;
+		*) POS+=("$1"); shift ;;
+	esac
+done
+[ "${#POS[@]}" -ge 1 ] && [ "${#POS[@]}" -le 2 ] || fail "usage: check-prov-test-gate.sh ROOTFS_DIR [WBOX_NAME] [--selftest-wbox-dir DIR] [--selftest-go GO]"
+R=${POS[0]}
+NAME=${POS[1]:-}
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 H=$R/usr/bin/batman-provhelper
-fail(){ echo "check-prov-test-gate: FAIL: $*" >&2; exit 1; }
 cnt(){ strings "$H" | grep -c -- "$1"; }     # Go strings have no NUL: grep -c counts the line it sits in
 # W = every wbox witness in the rootfs (space-separated, sorted, unique); grep rc 2 = a file it could not read = FAIL,
 # not "none". Runs in the gate's own shell (a fail() inside $(...) would only leave the subshell).
@@ -31,7 +47,7 @@ witnesses(){ local o rc; o=$(cd "$R" && grep -rhaoE 'WBOX-[a-z0-9-]+-[0-9a-f]{8}
 [ -f "$H" ] || fail "rootfs has no /usr/bin/batman-provhelper"
 command -v strings >/dev/null || fail "no strings(1) on the build host"
 GOV=$(sed -n 's/^GO_DEFAULT_VERSION:=//p' "$TOP"/feeds/openmanet/lang/golang/golang-values.mk 2>/dev/null | head -1)
-GO=${GO:-$TOP/staging_dir/hostpkg/lib/go-$GOV/bin/go}   # the tree's own Go, same rule as build-board.sh step 5
+GO=${OPT_GO:-$TOP/staging_dir/hostpkg/lib/go-$GOV/bin/go}   # the tree's own Go (build-board.sh step 5); never from the environment
 VER=$(sed -n 's/^BATMAN_VERSION=//p' "$R/etc/batman-build")
 WB=$(sed -n 's/^BATMAN_WBOX=//p' "$R/etc/batman-build")
 # go version -m prints nothing for a non-Go file (helper-exit1 replaces the binary with a shell script)
@@ -54,6 +70,13 @@ if [ -z "$NAME" ]; then
 	case "$VER" in *wbox*) fail "version $VER names a wbox variant in a normal build" ;; esac
 	[ "$ISGO" = 1 ] || fail "the helper is not a Go binary in a normal build"
 	noseam "normal build"
+	# the whole rootfs, not only /usr/bin/batman-provhelper: a prov_test binary under another name or path is caught
+	# too (security review F3). grep rc 2 (a file it could not read) = FAIL, not "none".
+	for pat in BATMAN_PROV_TEST_BUILD_7f3a 'killpoint [^ ]*: armed'; do
+		hit=$(cd "$R" && grep -rlaE -- "$pat" . 2>/dev/null); rc=$?
+		[ $rc -le 1 ] || fail "cannot scan the rootfs for test seams (grep rc $rc)"
+		[ -z "$hit" ] || fail "normal build: rootfs carries a test seam ($pat) in: $(echo $hit | cut -c1-200)"
+	done
 	witnesses
 	[ -z "$W" ] || fail "rootfs carries wbox witness strings: $W"
 	echo "check-prov-test-gate: ok (no test seam; helper tags=[${TAGS}])"
@@ -63,7 +86,7 @@ fi
 case "$NAME" in *[!a-z0-9-]*|'') fail "bad wbox name '$NAME'" ;; esac
 [ "$WB" = "$NAME" ] || fail "/etc/batman-build BATMAN_WBOX=[$WB], want $NAME"
 case "$VER" in *.dirty.wbox-"$NAME") ;; *) fail "version $VER does not end in .dirty.wbox-$NAME" ;; esac
-WD=${WBOX_DIR:-$TOP/feeds/batman/tests/wbox}   # override only for the gate self-test
+WD=${OPT_WD:-$TOP/feeds/batman/tests/wbox}   # --selftest-wbox-dir only; never from the environment
 LIST=$WD/helpers.list
 [ -f "$LIST" ] || fail "no $LIST"
 TAG=$(awk -v n="$NAME" '$1 == n { print $2; exit }' "$LIST")

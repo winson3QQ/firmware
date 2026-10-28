@@ -19,18 +19,27 @@ bb_lock(){
 wbox_env_reset(){ unset BATMAN_WBOX BATMAN_PROV_TEST GO_PKG_TAGS GOFLAGS; }
 
 # wbox_normal_check FEED — a normal build refuses a feed that still carries a wbox mutant (a -wbox build killed with
-# SIGKILL never ran its trap; openmanet_setup.sh -i does not reset feeds/batman): any modified, untracked or ignored
-# file holding a wbox witness. Other uncommitted work is allowed (it makes a .dirty build, as before).
+# SIGKILL never ran its trap; openmanet_setup.sh -i does not reset feeds/batman): any modified, untracked, ignored or
+# STAGED file holding a wbox witness (security review F4: `git add` takes a file off -m / -o; NUL-separated names, so a
+# non-ASCII or newline name is read as itself, not as a quoted string that names no file). Other uncommitted work is
+# allowed (it makes a .dirty build, as before).
 wbox_normal_check(){
-	local feed=$1 f hits="" list
+	local feed=$1 f hits="" lst rc
+	lst=$(mktemp) || { echo "cannot make a temp file — refusing the build" >&2; exit 1; }
 	# git failing (not a repo, unreadable index) is a refusal, not "nothing found" (r4 B-m3)
-	list=$(git -C "$feed" ls-files -m -o) || { echo "cannot list the changed files of $feed (git failed) — refusing the build" >&2; exit 1; }
-	while IFS= read -r f; do
-		[ -n "$f" ] && [ -f "$feed/$f" ] && grep -qE 'WBOX-[a-z0-9-]+-[0-9a-f]{8}' "$feed/$f" && hits="$hits $f"
-	done <<< "$list"
+	{ git -C "$feed" ls-files -z -m -o && git -C "$feed" diff --cached --name-only --no-renames -z; } > "$lst" \
+		|| { rm -f "$lst"; echo "cannot list the changed files of $feed (git failed) — refusing the build" >&2; exit 1; }
+	while IFS= read -r -d '' f; do
+		[ -f "$feed/$f" ] || continue
+		grep -qE 'WBOX-[a-z0-9-]+-[0-9a-f]{8}' "$feed/$f"; rc=$?
+		[ $rc -le 1 ] || { rm -f "$lst"; echo "cannot read $feed/$(printf %q "$f") (grep rc $rc) — refusing the build" >&2; exit 1; }
+		[ $rc = 0 ] && hits="$hits $(printf %q "$f")"
+	done < "$lst"
+	rm -f "$lst"
 	[ -z "$hits" ] && return 0
 	echo "$feed still carries a wbox mutant (files with a wbox witness:$hits) — a -wbox build was killed before" >&2
-	echo "  restoring it; restore it first: git -C $feed checkout -- . && git -C $feed clean -fdx  (after checking what goes)" >&2
+	echo "  restoring it; restore it first: git -C $feed reset -q && git -C $feed checkout -- . && git -C $feed clean -fdx" >&2
+	echo "  (after checking what goes)" >&2
 	exit 1
 }
 

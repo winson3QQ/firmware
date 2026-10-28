@@ -193,6 +193,10 @@ T=$("$US" -cat "$ROOTSQ" etc/openwrt_release 2>/dev/null | sed -n "s/^DISTRIB_TA
 echo "stamp in rootfs == $STAMP ($VER), DISTRIB_TARGET=$T"
 # #275: every board patch must be visible in THIS rootfs (its Batman-Witness), not only applied in feeds/
 WR=$(mktemp -d); "$US" -q -no-xattrs -f -d "$WR/r" "$ROOTSQ" >/dev/null 2>&1 || true
+# the gates below read this extraction: one that missed a regular file is a FAIL, not a pass (security review F2;
+# --card-only skips step 8, so this is the only gate a card gets)
+nl=$("$US" -lls "$ROOTSQ" | grep -c '^-') || true; nf=$(find "$WR/r" -type f | wc -l)
+[ "$nl" -gt 0 ] && [ "$nf" = "$nl" ] || { echo "rootfs extraction incomplete ($nf of $nl regular files)" >&2; rm -rf "$WR"; exit 1; }
 cmp -s "$WR/r/etc/batman-patch-witness" <(sh scripts/patch-witness.sh list "$BOARD") 	|| { echo "the rootfs /etc/batman-patch-witness is not this tree's (stale build?)" >&2; rm -rf "$WR"; exit 1; }
 sh scripts/patch-witness.sh check "$BOARD" "$WR/r" "$(ls "$BT"/*.manifest | head -1)" || { rm -rf "$WR"; exit 1; }
 # #254: EEPROM persistent vars stay unread (the files/ shim, not the Morse reader, is in this rootfs)
