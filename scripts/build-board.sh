@@ -46,8 +46,6 @@ while [ $# -gt 0 ]; do
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac; shift
 done
-# #254: BATMAN_WBOX / BATMAN_PROV_TEST come from --wbox only, never from the calling shell (code review A-M2)
-unset BATMAN_WBOX BATMAN_PROV_TEST
 if [ -n "$WBOX" ] && { [ "$CARD_ONLY" = 1 ] || [ "$UPDATE_LOCK" = 1 ]; }; then
 	echo "--wbox builds an OTA payload only: not with --card-only (a wbox card would boot a test variant committed) or --update-lock" >&2; exit 2
 fi
@@ -64,6 +62,11 @@ STAMP=logs/stamp-$BOARD.txt
 BOOTDIR=$TOP/logs/bootdir-$BOARD
 BT=bin/targets/bcm27xx/$SUB
 mkdir -p logs
+# #254: the -wbox steps (scripts/lib-wbox.sh); one build per tree; BATMAN_WBOX / BATMAN_PROV_TEST come from --wbox
+# only, never from the calling shell (r1 A-M2)
+. scripts/lib-wbox.sh
+bb_lock logs/.build-board.lock
+wbox_env_reset
 say(){ printf '\n=== [%s] %s\n' "$BOARD" "$*"; }
 norm(){ grep -E '^CONFIG_|^# CONFIG_.* is not set' "$1" | sort; }
 US=staging_dir/host/bin/unsquashfs4; command -v unsquashfs >/dev/null && US=unsquashfs
@@ -110,34 +113,11 @@ if [ "$CARD_ONLY" = 0 ]; then
 	sh scripts/check-batman-adv-source.sh
 	sh scripts/check-golang-rules.sh >&2 || { echo "golang rules still not synced after setup" >&2; exit 1; }
 
-	# #254 (Batman 254-h23 §4.2, §15.5): a -wbox test variant = this build plus one mutant patch from the pinned
-	# Batman feed (tests/wbox/NAME.patch), applied AFTER setup (-i resets feeds/) and always undone on exit.
-	# helpers.list decides the prov_test tag (one source; lint-wbox keeps it equal to the patch contents).
-	if [ -n "$WBOX" ]; then
-		case "$WBOX" in *[!a-z0-9-]*) echo "bad --wbox name '$WBOX'" >&2; exit 1 ;; esac
-		WL=feeds/batman/tests/wbox/helpers.list
-		[ -f "$WL" ] || { echo "no $WL in the pinned Batman feed — cannot build -wbox variants" >&2; exit 1; }
-		WTAG=$(awk -v n="$WBOX" '$1 == n { print $2; exit }' "$WL")
-		[ -n "$WTAG" ] || { echo "$WBOX is not in $WL" >&2; exit 1; }
-		case "$WTAG" in prov_test|release) ;; *) echo "$WL: tag '$WTAG' for $WBOX (want prov_test or release)" >&2; exit 1 ;; esac
-		# the patch goes onto a CLEAN feed and the trap restores it: a leftover mutant (a build killed with SIGKILL
-		# skips the trap) or uncommitted work in feeds/batman would be stacked under / wiped by this variant (B-M1)
-		WD=$(git -C feeds/batman status --porcelain --ignored)
-		if [ -n "$WD" ]; then
-			echo "feeds/batman is not clean — refusing to apply a wbox patch onto it (commit / stash your work, or" >&2
-			echo "  git -C feeds/batman checkout -- . && git -C feeds/batman clean -fdx  after checking what goes):" >&2
-			printf '%s\n' "$WD" | head -20 >&2; exit 1
-		fi
-		trap 'git -C feeds/batman checkout -q -- . && git -C feeds/batman clean -qfdx' EXIT
-		if [ "$WBOX" != test ]; then
-			WP=tests/wbox/$WBOX.patch
-			[ -f "feeds/batman/$WP" ] || { echo "no feeds/batman/$WP" >&2; exit 1; }
-			git -C feeds/batman apply --check "$WP" && git -C feeds/batman apply "$WP" || { echo "wbox patch $WP does not apply" >&2; exit 1; }
-		fi
-		export BATMAN_WBOX=$WBOX
-		[ "$WTAG" = prov_test ] && export BATMAN_PROV_TEST=1
-		echo "wbox variant $WBOX (tag $WTAG): applied; feeds/batman is restored on exit"
-	fi
+	# #254 (Batman 254-h23 §4.2, §15.5, §16.7): a -wbox test variant = this build plus one mutant patch from the pinned
+	# Batman feed (tests/wbox/NAME.patch), applied AFTER setup (-i resets feeds/) onto a clean feed and always undone
+	# on exit; helpers.list decides the prov_test tag. The steps live in scripts/lib-wbox.sh (regression-tested by
+	# scripts/test-build-board-wbox.sh).
+	[ -z "$WBOX" ] || wbox_apply "$WBOX" feeds/batman
 
 	say "3 config lock"
 	LOCK=boards/$BOARD/batman-config.lock
@@ -177,11 +157,8 @@ if [ "$CARD_ONLY" = 0 ]; then
 	# #254: the prov_test tag / a mutant reaches the Go package only through env + patched files, which OpenWrt's
 	# rebuild hash does not see (env) or sees only by mtime: clean both packages whenever the variant changes.
 	WBSTAMP=logs/wbox-$BOARD.stamp; WBNOW="${WBOX:-none}|${BATMAN_PROV_TEST:-0}"
-	if [ "$(cat "$WBSTAMP" 2>/dev/null)" != "$WBNOW" ]; then
-		echo "wbox variant changed ($(cat "$WBSTAMP" 2>/dev/null || echo unknown) -> $WBNOW): cleaning batman-prov, batman-provision"
-		for p in batman-prov batman-provision; do make "package/$p/clean" > "logs/wbclean-$BOARD-$p.log" 2>&1 || { tail -20 "logs/wbclean-$BOARD-$p.log" >&2; exit 1; }; done
-		echo "in-progress:$WBNOW" > "$WBSTAMP"   # an interrupted build of this variant cleans again next time
-	fi
+	wbclean(){ local p; for p in batman-prov batman-provision; do make "package/$p/clean" > "logs/wbclean-$BOARD-$p.log" 2>&1 || { tail -20 "logs/wbclean-$BOARD-$p.log" >&2; return 1; }; done; }
+	wbox_stamp_begin "$WBSTAMP" "$WBNOW" wbclean
 	if ! make -j"$JOBS" > "logs/build-$BOARD.log" 2>&1; then
 		echo "make failed — retrying -j1 V=s (parallel-build races happen; logs/build-$BOARD-v.log)" >&2
 		make -j1 V=s > "logs/build-$BOARD-v.log" 2>&1 || { tail -40 "logs/build-$BOARD-v.log" >&2; exit 1; }
@@ -194,7 +171,7 @@ if [ "$CARD_ONLY" = 0 ]; then
 	CPU=$([ "$SOC" = bcm2711 ] && echo a72 || echo a53)
 	sh scripts/check-go-toolchain.sh "build_dir/target-aarch64_cortex-${CPU}_musl/root-bcm27xx"
 	[ ! -f "logs/go-rules-$BOARD.stamp.pending" ] || mv "logs/go-rules-$BOARD.stamp.pending" "logs/go-rules-$BOARD.stamp"
-	echo "$WBNOW" > "$WBSTAMP"
+	wbox_stamp_done "$WBSTAMP" "$WBNOW"
 fi
 
 [ -f "$STAMP" ] || { echo "no $STAMP — build this board first (without --card-only)" >&2; exit 1; }

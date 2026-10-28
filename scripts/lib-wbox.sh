@@ -1,0 +1,60 @@
+# lib-wbox.sh — sourced by scripts/build-board.sh (bash): the #254 -wbox steps, one function each, so that
+# scripts/test-build-board-wbox.sh can drive the very code the build runs (Batman 254-h23 §4.2, §15.5, §16.7).
+# Every function exits the calling shell on a refusal (build-board.sh runs them in its own shell).
+
+# bb_lock FILE — one build-board.sh per tree at a time (two would apply / restore feeds/batman under each other and
+# share build_dir). fd 9 stays open, so the lock lives until the script exits.
+bb_lock(){
+	exec 9>>"$1" || { echo "cannot open the build lock $1" >&2; exit 2; }
+	flock -n 9 || { echo "another build-board.sh holds $1 — one build per tree at a time" >&2; exit 2; }
+}
+
+# wbox_env_reset — BATMAN_WBOX / BATMAN_PROV_TEST come from --wbox only, never from the calling shell.
+wbox_env_reset(){ unset BATMAN_WBOX BATMAN_PROV_TEST; }
+
+# wbox_apply NAME FEED — validate NAME against FEED/tests/wbox/helpers.list, refuse a FEED that is not clean, apply
+# NAME's patch (none for `test`), arm the EXIT trap that restores FEED, export BATMAN_WBOX (+ BATMAN_PROV_TEST=1).
+# Order matters: the clean check comes before the trap (a trap set first would wipe the developer's work on refusal).
+wbox_apply(){
+	local name=$1 feed=$2 wl wd wp line tag kind
+	case "$name" in ''|*[!a-z0-9-]*) echo "bad --wbox name '$name'" >&2; exit 1 ;; esac
+	wl=$feed/tests/wbox/helpers.list
+	[ -f "$wl" ] || { echo "no $wl in the pinned Batman feed — cannot build -wbox variants" >&2; exit 1; }
+	line=$(awk -v n="$name" '$1 == n { print $2, $3; exit }' "$wl")
+	tag=${line% *}; kind=${line#* }
+	[ -n "$line" ] || { echo "$name is not in $wl" >&2; exit 1; }
+	case "$tag" in prov_test|release) ;; *) echo "$wl: tag '$tag' for $name (want prov_test or release)" >&2; exit 1 ;; esac
+	case "$kind" in helper|same) ;; *) echo "$wl: helper column '$kind' for $name (want helper or same)" >&2; exit 1 ;; esac
+	# the patch goes onto a CLEAN feed and the trap restores it: a leftover mutant (a build killed with SIGKILL skips
+	# the trap) or uncommitted work in the feed would be stacked under / wiped by this variant (r1 B-M1)
+	wd=$(git -C "$feed" status --porcelain --ignored) || { echo "cannot read git status of $feed" >&2; exit 1; }
+	if [ -n "$wd" ]; then
+		echo "$feed is not clean — refusing to apply a wbox patch onto it (commit / stash your work, or" >&2
+		echo "  git -C $feed checkout -- . && git -C $feed clean -fdx  after checking what goes):" >&2
+		printf '%s\n' "$wd" | head -20 >&2; exit 1
+	fi
+	trap "git -C '$feed' checkout -q -- . && git -C '$feed' clean -qfdx" EXIT
+	if [ "$name" != test ]; then
+		wp=tests/wbox/$name.patch
+		[ -f "$feed/$wp" ] || { echo "no $feed/$wp" >&2; exit 1; }
+		{ git -C "$feed" apply --check "$wp" && git -C "$feed" apply "$wp"; } || { echo "wbox patch $wp does not apply" >&2; exit 1; }
+	fi
+	export BATMAN_WBOX=$name
+	[ "$tag" = prov_test ] && export BATMAN_PROV_TEST=1
+	echo "wbox variant $name (tag $tag): applied; $feed is restored on exit"
+}
+
+# wbox_stamp_begin STAMP NOW CLEAN-CMD... — when the variant differs from the last finished build's, run CLEAN-CMD
+# (cleans the Go packages: OpenWrt's rebuild hash does not see env, and sees patched files only by mtime) and mark
+# the stamp "in-progress:NOW", so an interrupted build of NOW cleans again next time.
+wbox_stamp_begin(){
+	local st=$1 now=$2 was; shift 2
+	was=$(cat "$st" 2>/dev/null || echo unknown)
+	[ "$was" = "$now" ] && return 0
+	echo "wbox variant changed ($was -> $now): cleaning batman-prov, batman-provision"
+	"$@" || exit 1
+	echo "in-progress:$now" > "$st"
+}
+
+# wbox_stamp_done STAMP NOW — the build of NOW finished: record it.
+wbox_stamp_done(){ echo "$2" > "$1"; }
