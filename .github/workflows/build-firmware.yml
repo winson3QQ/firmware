@@ -228,6 +228,7 @@ jobs:
           # own self-test (real arm64 helpers from the pinned Batman source, built by this tree's Go)
           bash scripts/check-prov-test-gate.sh witness-root
           BATMAN_SRC=feeds/batman/feed/batman-prov/src bash scripts/test-prov-test-gate.sh
+          bash scripts/test-rc-button.sh witness-root   # #254 prov-unit-button: the SHIPPED reset buttons never wipe
           # the -wbox steps build-board.sh runs (scripts/lib-wbox.sh), on a fake feed — no build
           bash scripts/test-build-board-wbox.sh
           rm -rf witness-root
