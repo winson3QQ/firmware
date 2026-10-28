@@ -5,6 +5,11 @@
 # bb_lock FILE — one build-board.sh per tree at a time (two would apply / restore feeds/batman under each other and
 # share build_dir). fd 9 stays open, so the lock lives until the script exits.
 bb_lock(){
+	# root (--card-only, or a build by mistake) never CREATES the lock: a root-owned lock file would stop every later
+	# build of the tree owner at "cannot open the build lock" (r4 A-m4 / B-m5)
+	if [ ! -e "$1" ] && [ "$(id -u)" = 0 ]; then
+		echo "no build lock $1 yet — build this tree as its owner first (root does not create it)" >&2; exit 2
+	fi
 	exec 9>>"$1" || { echo "cannot open the build lock $1" >&2; exit 2; }
 	flock -n 9 || { echo "another build-board.sh holds $1 — one build per tree at a time" >&2; exit 2; }
 }
@@ -17,10 +22,12 @@ wbox_env_reset(){ unset BATMAN_WBOX BATMAN_PROV_TEST GO_PKG_TAGS GOFLAGS; }
 # SIGKILL never ran its trap; openmanet_setup.sh -i does not reset feeds/batman): any modified, untracked or ignored
 # file holding a wbox witness. Other uncommitted work is allowed (it makes a .dirty build, as before).
 wbox_normal_check(){
-	local feed=$1 f hits=""
+	local feed=$1 f hits="" list
+	# git failing (not a repo, unreadable index) is a refusal, not "nothing found" (r4 B-m3)
+	list=$(git -C "$feed" ls-files -m -o) || { echo "cannot list the changed files of $feed (git failed) — refusing the build" >&2; exit 1; }
 	while IFS= read -r f; do
-		[ -f "$feed/$f" ] && grep -qE 'WBOX-[a-z0-9-]+-[0-9a-f]{8}' "$feed/$f" && hits="$hits $f"
-	done < <(git -C "$feed" ls-files -m -o)
+		[ -n "$f" ] && [ -f "$feed/$f" ] && grep -qE 'WBOX-[a-z0-9-]+-[0-9a-f]{8}' "$feed/$f" && hits="$hits $f"
+	done <<< "$list"
 	[ -z "$hits" ] && return 0
 	echo "$feed still carries a wbox mutant (files with a wbox witness:$hits) — a -wbox build was killed before" >&2
 	echo "  restoring it; restore it first: git -C $feed checkout -- . && git -C $feed clean -fdx  (after checking what goes)" >&2
@@ -54,6 +61,8 @@ wbox_apply(){
 		[ -f "$feed/$wp" ] || { echo "no $feed/$wp" >&2; exit 1; }
 		# a mutant may only touch the two packages the stamp step cleans (wbclean) — never tests/wbox (read before the
 		# patch by this function, after it by the gate) or anything else the build would reuse unchanged (r3 A-m5)
+		# no rename / copy: --numstat lists only a rename's DESTINATION, so a source outside the scope would pass (r4 A-m1)
+		grep -qE '^(rename|copy) (from|to) ' "$feed/$wp" && { echo "wbox patch $wp renames / copies a file (not allowed)" >&2; exit 1; }
 		local p bad=""
 		while read -r _ _ p; do
 			case "$p" in feed/batman-prov/*|feed/batman-provision/*) ;; *) bad="$bad $p" ;; esac

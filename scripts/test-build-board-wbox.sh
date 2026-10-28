@@ -20,7 +20,9 @@ printf '# wbox helper-notrial\n# wbox-witness: WBOX-helper-notrial-55667788\n---
 printf '# wbox listedit\n# wbox-witness: WBOX-listedit-0a0a0a0a\n--- a/tests/wbox/helpers.list\n+++ b/tests/wbox/helpers.list\n@@ -1 +1 @@\n-test prov_test helper\n+test release same\n' > $F/tests/wbox/listedit.patch
 mkdir -p $F/feed/other; echo o > $F/feed/other/x
 printf '# wbox-witness: WBOX-otherpkg-0b0b0b0b\n--- a/feed/other/x\n+++ b/feed/other/x\n@@ -1 +1 @@\n-o\n+WBOX-otherpkg-0b0b0b0b\n' > $F/tests/wbox/otherpkg.patch
-printf 'listedit release same\notherpkg release same\n' >> $F/tests/wbox/helpers.list
+printf '# wbox renamein\n# wbox-witness: WBOX-renamein-0c0c0c0c\ndiff --git a/feed/other/x b/feed/batman-provision/files/x\nsimilarity index 100%%\nrename from feed/other/x\nrename to feed/batman-provision/files/x\n' > $F/tests/wbox/renamein.patch
+printf '# wbox noop: header only\n# wbox-witness: WBOX-noop-0d0d0d0d\n' > $F/tests/wbox/noop.patch
+printf 'listedit release same\notherpkg release same\nrenamein release same\nnoop release same\n' >> $F/tests/wbox/helpers.list
 printf '/ignored-*\n' > $F/.gitignore
 git -C $F add -A; git -C $F commit -qm base
 pass=0; bad=0
@@ -69,7 +71,22 @@ clean && res 1 "feed clean after refused patches" || res 0 "feed clean after ref
 bash -c '. "$1"; set -e; wbox_apply chan "$2" >/dev/null; echo gen > "$2"/ignored-gen' _ "$LIB" "$F"
 clean && res 1 "ignored file made during the build -> removed on exit" || res 0 "ignored file made during the build" "$(git -C $F status --porcelain --ignored | tr '\n' ' ')"
 # a normal build refuses a leftover mutant (killed -wbox build), allows other uncommitted work (r3 B-m4)
+no_case "rename INTO a package (source outside) -> refused" renamein "renames / copies"
+[ -f $F/feed/other/x ] && res 1 "rename source kept" || res 0 "rename source kept" "feed/other/x gone"
+no_case "patch that changes nothing -> refused" noop "changes nothing"
+clean && res 1 "feed clean after the rename / no-op refusals" || res 0 "feed clean after refusals" "$(git -C $F status --porcelain --ignored | tr '\n' ' ')"
 nc(){ bash -c '. "$1"; wbox_normal_check "$2"; echo NORMAL-OK' _ "$LIB" "$F" 2>&1; }
+# git failing is a refusal, not "nothing found" (r4 B-m3)
+NR=$(mktemp -d); o=$(bash -c '. "$1"; wbox_normal_check "$2"; echo NORMAL-OK' _ "$LIB" "$NR" 2>&1); rm -rf "$NR"
+case "$o" in *"git failed"*) case "$o" in *NORMAL-OK*) res 0 "normal check: not a git repo" "$o" ;; *) res 1 "normal check: not a git repo -> refused" ;; esac ;; *) res 0 "normal check: not a git repo" "$o" ;; esac
+chmod 000 $F/.git/index; o=$(nc); chmod 644 $F/.git/index
+if [ "$(id -u)" = 0 ]; then echo "skip unreadable-index case as root"; else
+case "$o" in *"git failed"*) res 1 "normal check: unreadable git index -> refused" ;; *) res 0 "normal check: unreadable index" "$o" ;; esac; fi
+# root never creates the build lock (r4 A-m4 / B-m5): id is stubbed to 0
+NL=$(mktemp -d); o=$(bash -c '. "$1"; id(){ echo 0; }; bb_lock "$2"; echo GOT-LOCK' _ "$LIB" "$NL/lock" 2>&1); rc=$?
+[ $rc = 2 ] && [ ! -e "$NL/lock" ] && case "$o" in *"root does not create it"*) true ;; *) false ;; esac && res 1 "root without an existing lock -> refused, no lock file made" || res 0 "root lock" "rc=$rc exists=$([ -e "$NL/lock" ] && echo y) $o"
+: > "$NL/lock"; o=$(bash -c '. "$1"; id(){ echo 0; }; bb_lock "$2"; echo GOT-LOCK' _ "$LIB" "$NL/lock" 2>&1)
+[ "$o" = GOT-LOCK ] && res 1 "root with the owner's lock file -> locks" || res 0 "root with lock" "$o"; rm -rf "$NL"
 git -C $F apply tests/wbox/chan.patch
 o=$(nc); case "$o" in *"still carries a wbox mutant"*wbox-chan*) res 1 "normal build: leftover untracked mutant -> refused" ;; *) res 0 "normal build: leftover untracked mutant" "$o" ;; esac
 git -C $F clean -qfdx; git -C $F apply tests/wbox/helper-notrial.patch
@@ -113,15 +130,16 @@ o=$(bash -c '. "$1"; bb_lock "$2"; echo got-lock' _ "$LIB" "$L" 2>&1); [ "$o" = 
 # build-board.sh really uses these functions (a test of the lib is a test of the build)
 B=$FW/scripts/build-board.sh
 for w in '. scripts/lib-wbox.sh' 'bb_lock logs/.build-board.lock' 'wbox_env_reset' 'wbox_apply "$WBOX" feeds/batman' 'wbox_normal_check feeds/batman' 'wbox_stamp_begin "$WBSTAMP" "$WBNOW" wbclean' 'wbox_stamp_done "$WBSTAMP" "$WBNOW"'; do
-	grep -qF -- "$w" $B && res 1 "build-board.sh calls: $w" || res 0 "build-board.sh calls: $w" "missing"
+	grep -v '^[[:space:]]*#' $B | grep -qF -- "$w" && res 1 "build-board.sh calls: $w" || res 0 "build-board.sh calls: $w" "missing"
 done
 [ -z "$(grep -n 'git -C feeds/batman apply\|unset BATMAN_WBOX' $B)" ] && res 1 "build-board.sh has no second copy of the steps" || res 0 "no second copy" "$(grep -n 'git -C feeds/batman apply\|unset BATMAN_WBOX' $B)"
 # ... and in this order (a step moved after make would only be caught by the gate, after a whole build — r3 B-m2):
 # lock -> env reset -> setup done -> apply / normal check -> stamp begin -> make -> stamp done -> step 7 gate
-ln(){ grep -nF -- "$1" $B | head -1 | cut -d: -f1; }
+# first NON-comment line holding the call (a commented-out call must not count, r4 B-m2)
+lno(){ grep -nF -- "$1" $B | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1; }
 prev=0; prevw=start
-for w in 'bb_lock logs/.build-board.lock' 'wbox_env_reset' 'sh scripts/check-golang-rules.sh' 'wbox_apply "$WBOX" feeds/batman' 'wbox_normal_check feeds/batman' 'wbox_stamp_begin "$WBSTAMP" "$WBNOW" wbclean' 'make -j"$JOBS"' 'wbox_stamp_done "$WBSTAMP" "$WBNOW"' 'bash scripts/check-prov-test-gate.sh'; do
-	n=$(ln "$w"); if [ -n "$n" ] && [ "$n" -gt "$prev" ]; then res 1 "build-board.sh order: $prevw < $w"; else res 0 "build-board.sh order" "$w at line [$n], not after $prevw (line $prev)"; fi
+for w in 'bb_lock logs/.build-board.lock' 'wbox_env_reset' 'sh scripts/check-golang-rules.sh' 'wbox_apply "$WBOX" feeds/batman' 'wbox_normal_check feeds/batman' 'wbox_stamp_begin "$WBSTAMP" "$WBNOW" wbclean' 'make -j"$JOBS"' 'wbox_stamp_done "$WBSTAMP" "$WBNOW"' 'bash scripts/check-prov-test-gate.sh "$WR/r" ${WBOX:+"$WBOX"}'; do
+	n=$(lno "$w"); if [ -n "$n" ] && [ "$n" -gt "$prev" ]; then res 1 "build-board.sh order: $prevw < $w"; else res 0 "build-board.sh order" "$w at line [$n], not after $prevw (line $prev)"; fi
 	prev=${n:-0}; prevw=$w
 done
 echo "RESULT build-board wbox test: $pass ok, $bad bad"; [ $bad = 0 ] && [ $pass -gt 0 ]
