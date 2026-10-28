@@ -9,8 +9,23 @@ bb_lock(){
 	flock -n 9 || { echo "another build-board.sh holds $1 — one build per tree at a time" >&2; exit 2; }
 }
 
-# wbox_env_reset — BATMAN_WBOX / BATMAN_PROV_TEST come from --wbox only, never from the calling shell.
-wbox_env_reset(){ unset BATMAN_WBOX BATMAN_PROV_TEST; }
+# wbox_env_reset — BATMAN_WBOX / BATMAN_PROV_TEST come from --wbox only, never from the calling shell; GO_PKG_TAGS /
+# GOFLAGS from the shell would reach the Go package build too (make takes them from the environment, r3 B-m1).
+wbox_env_reset(){ unset BATMAN_WBOX BATMAN_PROV_TEST GO_PKG_TAGS GOFLAGS; }
+
+# wbox_normal_check FEED — a normal build refuses a feed that still carries a wbox mutant (a -wbox build killed with
+# SIGKILL never ran its trap; openmanet_setup.sh -i does not reset feeds/batman): any modified, untracked or ignored
+# file holding a wbox witness. Other uncommitted work is allowed (it makes a .dirty build, as before).
+wbox_normal_check(){
+	local feed=$1 f hits=""
+	while IFS= read -r f; do
+		[ -f "$feed/$f" ] && grep -qE 'WBOX-[a-z0-9-]+-[0-9a-f]{8}' "$feed/$f" && hits="$hits $f"
+	done < <(git -C "$feed" ls-files -m -o)
+	[ -z "$hits" ] && return 0
+	echo "$feed still carries a wbox mutant (files with a wbox witness:$hits) — a -wbox build was killed before" >&2
+	echo "  restoring it; restore it first: git -C $feed checkout -- . && git -C $feed clean -fdx  (after checking what goes)" >&2
+	exit 1
+}
 
 # wbox_apply NAME FEED — validate NAME against FEED/tests/wbox/helpers.list, refuse a FEED that is not clean, apply
 # NAME's patch (none for `test`), arm the EXIT trap that restores FEED, export BATMAN_WBOX (+ BATMAN_PROV_TEST=1).
@@ -37,6 +52,14 @@ wbox_apply(){
 	if [ "$name" != test ]; then
 		wp=tests/wbox/$name.patch
 		[ -f "$feed/$wp" ] || { echo "no $feed/$wp" >&2; exit 1; }
+		# a mutant may only touch the two packages the stamp step cleans (wbclean) — never tests/wbox (read before the
+		# patch by this function, after it by the gate) or anything else the build would reuse unchanged (r3 A-m5)
+		local p bad=""
+		while read -r _ _ p; do
+			case "$p" in feed/batman-prov/*|feed/batman-provision/*) ;; *) bad="$bad $p" ;; esac
+		done < <(git -C "$feed" apply --numstat "$wp") || true
+		[ -z "$bad" ] || { echo "wbox patch $wp touches files outside feed/batman-prov{,ision}/:$bad" >&2; exit 1; }
+		[ -n "$(git -C "$feed" apply --numstat "$wp" 2>/dev/null)" ] || { echo "wbox patch $wp changes nothing (or does not parse)" >&2; exit 1; }
 		{ git -C "$feed" apply --check "$wp" && git -C "$feed" apply "$wp"; } || { echo "wbox patch $wp does not apply" >&2; exit 1; }
 	fi
 	export BATMAN_WBOX=$name

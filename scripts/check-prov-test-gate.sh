@@ -25,6 +25,7 @@ witnesses(){ local o rc; o=$(cd "$R" && grep -rhaoE 'WBOX-[a-z0-9-]+-[0-9a-f]{8}
 	W=$(printf '%s\n' "$o" | sed '/^$/d' | sort -u | tr '\n' ' '); W=${W% }; }
 
 [ -d "$R/etc" ] || fail "rootfs '$R' not extracted (no etc/)"
+[ ! -L "$R/etc/batman-build" ] || fail "rootfs /etc/batman-build is a symlink"
 [ -f "$R/etc/batman-build" ] || fail "rootfs has no /etc/batman-build"
 [ ! -L "$H" ] || fail "rootfs /usr/bin/batman-provhelper is a symlink (an absolute one would make this gate read a build-host file)"
 [ -f "$H" ] || fail "rootfs has no /usr/bin/batman-provhelper"

@@ -114,10 +114,15 @@ if [ "$CARD_ONLY" = 0 ]; then
 	sh scripts/check-golang-rules.sh >&2 || { echo "golang rules still not synced after setup" >&2; exit 1; }
 
 	# #254 (Batman 254-h23 §4.2, §15.5, §16.7): a -wbox test variant = this build plus one mutant patch from the pinned
-	# Batman feed (tests/wbox/NAME.patch), applied AFTER setup (-i resets feeds/) onto a clean feed and always undone
-	# on exit; helpers.list decides the prov_test tag. The steps live in scripts/lib-wbox.sh (regression-tested by
+	# Batman feed (tests/wbox/NAME.patch), applied after setup onto a CLEAN feed and always undone on exit (setup's -i
+	# does not reset feeds/batman: openmanet_setup.sh keeps it, so a normal build checks for a leftover mutant too);
+	# helpers.list decides the prov_test tag. The steps live in scripts/lib-wbox.sh (regression-tested by
 	# scripts/test-build-board-wbox.sh).
-	[ -z "$WBOX" ] || wbox_apply "$WBOX" feeds/batman
+	if [ -n "$WBOX" ]; then
+		wbox_apply "$WBOX" feeds/batman
+	else
+		wbox_normal_check feeds/batman
+	fi
 
 	say "3 config lock"
 	LOCK=boards/$BOARD/batman-config.lock

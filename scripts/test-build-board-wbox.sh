@@ -17,6 +17,10 @@ printf 'test prov_test helper\nhelper-notrial prov_test helper\nchan release sam
 echo base > $F/feed/batman-provision/files/etc/init.d/keep
 printf '# wbox chan\n# wbox-witness: WBOX-chan-11223344\n--- /dev/null\n+++ b/feed/batman-provision/files/etc/init.d/wbox-chan\n@@ -0,0 +1 @@\n+WBOX-chan-11223344\n' > $F/tests/wbox/chan.patch
 printf '# wbox helper-notrial\n# wbox-witness: WBOX-helper-notrial-55667788\n--- a/feed/batman-provision/files/etc/init.d/keep\n+++ b/feed/batman-provision/files/etc/init.d/keep\n@@ -1 +1 @@\n-base\n+WBOX-helper-notrial-55667788\n' > $F/tests/wbox/helper-notrial.patch
+printf '# wbox listedit\n# wbox-witness: WBOX-listedit-0a0a0a0a\n--- a/tests/wbox/helpers.list\n+++ b/tests/wbox/helpers.list\n@@ -1 +1 @@\n-test prov_test helper\n+test release same\n' > $F/tests/wbox/listedit.patch
+mkdir -p $F/feed/other; echo o > $F/feed/other/x
+printf '# wbox-witness: WBOX-otherpkg-0b0b0b0b\n--- a/feed/other/x\n+++ b/feed/other/x\n@@ -1 +1 @@\n-o\n+WBOX-otherpkg-0b0b0b0b\n' > $F/tests/wbox/otherpkg.patch
+printf 'listedit release same\notherpkg release same\n' >> $F/tests/wbox/helpers.list
 printf '/ignored-*\n' > $F/.gitignore
 git -C $F add -A; git -C $F commit -qm base
 pass=0; bad=0
@@ -57,11 +61,29 @@ git -C $F apply tests/wbox/chan.patch
 no_case "leftover mutant -> refused" helper-notrial "is not clean"
 [ -f $F/feed/batman-provision/files/etc/init.d/wbox-chan ] && res 1 "leftover kept for inspection" || res 0 "leftover kept for inspection" "wiped"
 git -C $F clean -qfdx; clean && res 1 "feed clean again" || res 0 "feed clean again" "$(git -C $F status --porcelain)"
-for sig in TERM INT; do
+# a mutant may only touch the two packages the stamp step cleans (r3 A-m5)
+no_case "patch that edits tests/wbox/helpers.list -> refused" listedit "touches files outside"
+no_case "patch that edits another package -> refused" otherpkg "touches files outside"
+clean && res 1 "feed clean after refused patches" || res 0 "feed clean after refused patches" "$(git -C $F status --porcelain --ignored | tr '\n' ' ')"
+# an ignored file made during the build (a variant's build output in the feed) goes too: clean -x (r3 A-m1)
+bash -c '. "$1"; set -e; wbox_apply chan "$2" >/dev/null; echo gen > "$2"/ignored-gen' _ "$LIB" "$F"
+clean && res 1 "ignored file made during the build -> removed on exit" || res 0 "ignored file made during the build" "$(git -C $F status --porcelain --ignored | tr '\n' ' ')"
+# a normal build refuses a leftover mutant (killed -wbox build), allows other uncommitted work (r3 B-m4)
+nc(){ bash -c '. "$1"; wbox_normal_check "$2"; echo NORMAL-OK' _ "$LIB" "$F" 2>&1; }
+git -C $F apply tests/wbox/chan.patch
+o=$(nc); case "$o" in *"still carries a wbox mutant"*wbox-chan*) res 1 "normal build: leftover untracked mutant -> refused" ;; *) res 0 "normal build: leftover untracked mutant" "$o" ;; esac
+git -C $F clean -qfdx; git -C $F apply tests/wbox/helper-notrial.patch
+o=$(nc); case "$o" in *"still carries a wbox mutant"*keep*) res 1 "normal build: leftover tracked mutant -> refused" ;; *) res 0 "normal build: leftover tracked mutant" "$o" ;; esac
+git -C $F checkout -q -- .; echo WBOX-chan-11223344 > $F/ignored-w
+o=$(nc); case "$o" in *"still carries a wbox mutant"*ignored-w*) res 1 "normal build: ignored file with a witness -> refused" ;; *) res 0 "normal build: ignored witness" "$o" ;; esac
+rm -f $F/ignored-w; echo dev >> $F/feed/batman-provision/files/etc/init.d/keep; echo x > $F/untracked-dev
+o=$(nc); [ "$o" = NORMAL-OK ] && res 1 "normal build: other uncommitted work allowed" || res 0 "normal build: other work" "$o"
+git -C $F checkout -q -- .; git -C $F clean -qfdx
+for sig in TERM INT HUP; do
 	# like build-board.sh under a terminal: no trap but the lib's EXIT trap, the long step (here sleep, there make) in
 	# the FOREGROUND, the job in its own process group with SIGINT/SIGTERM at their defaults, and the signal sent to the
 	# whole group (what Ctrl-C does). No helper trap that would make the case pass on its own.
-	setsid perl -e '$SIG{INT}="DEFAULT"; $SIG{TERM}="DEFAULT"; exec @ARGV or die' \
+	setsid perl -e '$SIG{INT}="DEFAULT"; $SIG{TERM}="DEFAULT"; $SIG{HUP}="DEFAULT"; exec @ARGV or die' \
 		bash -c '. "$1"; set -e; wbox_apply chan "$2" >/dev/null; sleep 30' _ "$LIB" "$F" & p=$!
 	for i in $(seq 50); do [ -f $F/feed/batman-provision/files/etc/init.d/wbox-chan ] && break; sleep 0.1; done
 	[ -f $F/feed/batman-provision/files/etc/init.d/wbox-chan ] || res 0 "SIG$sig mid-build" "patch never applied"
@@ -70,8 +92,8 @@ for sig in TERM INT; do
 	clean && [ $rc -ge 128 ] && res 1 "SIG$sig to the job's group mid-build -> rc $rc, restored" || res 0 "SIG$sig mid-build -> restored" "rc=$rc $(git -C $F status --porcelain --ignored | tr '\n' ' ')"
 done
 # environment from the calling shell never reaches a normal build
-o=$(env BATMAN_WBOX=chan BATMAN_PROV_TEST=1 bash -c '. "$1"; wbox_env_reset; echo "[${BATMAN_WBOX:-}][${BATMAN_PROV_TEST:-}]"' _ "$LIB")
-[ "$o" = "[][]" ] && res 1 "inherited BATMAN_WBOX / BATMAN_PROV_TEST unset" || res 0 "inherited env unset" "$o"
+o=$(env BATMAN_WBOX=chan BATMAN_PROV_TEST=1 GO_PKG_TAGS=prov_test GOFLAGS=-tags=prov_test bash -c '. "$1"; wbox_env_reset; echo "[${BATMAN_WBOX:-}][${BATMAN_PROV_TEST:-}][${GO_PKG_TAGS:-}][${GOFLAGS:-}]"' _ "$LIB")
+[ "$o" = "[][][][]" ] && res 1 "inherited BATMAN_WBOX / BATMAN_PROV_TEST / GO_PKG_TAGS / GOFLAGS unset" || res 0 "inherited env unset" "$o"
 # stamp: changed -> clean + in-progress; done -> NOW; same -> no clean; interrupted (in-progress) -> clean again
 ST=$T/stamp; CL=$T/cleaned
 st(){ bash -c '. "$1"; wbox_stamp_begin "$2" "$3" touch "$4"' _ "$LIB" "$ST" "$1" "$CL" >/dev/null; }
@@ -90,8 +112,16 @@ kill $p; wait $p 2>/dev/null
 o=$(bash -c '. "$1"; bb_lock "$2"; echo got-lock' _ "$LIB" "$L" 2>&1); [ "$o" = got-lock ] && res 1 "lock free again after the holder exits" || res 0 "lock released" "$o"
 # build-board.sh really uses these functions (a test of the lib is a test of the build)
 B=$FW/scripts/build-board.sh
-for w in '. scripts/lib-wbox.sh' 'bb_lock logs/.build-board.lock' 'wbox_env_reset' 'wbox_apply "$WBOX" feeds/batman' 'wbox_stamp_begin "$WBSTAMP" "$WBNOW" wbclean' 'wbox_stamp_done "$WBSTAMP" "$WBNOW"'; do
+for w in '. scripts/lib-wbox.sh' 'bb_lock logs/.build-board.lock' 'wbox_env_reset' 'wbox_apply "$WBOX" feeds/batman' 'wbox_normal_check feeds/batman' 'wbox_stamp_begin "$WBSTAMP" "$WBNOW" wbclean' 'wbox_stamp_done "$WBSTAMP" "$WBNOW"'; do
 	grep -qF -- "$w" $B && res 1 "build-board.sh calls: $w" || res 0 "build-board.sh calls: $w" "missing"
 done
 [ -z "$(grep -n 'git -C feeds/batman apply\|unset BATMAN_WBOX' $B)" ] && res 1 "build-board.sh has no second copy of the steps" || res 0 "no second copy" "$(grep -n 'git -C feeds/batman apply\|unset BATMAN_WBOX' $B)"
+# ... and in this order (a step moved after make would only be caught by the gate, after a whole build — r3 B-m2):
+# lock -> env reset -> setup done -> apply / normal check -> stamp begin -> make -> stamp done -> step 7 gate
+ln(){ grep -nF -- "$1" $B | head -1 | cut -d: -f1; }
+prev=0; prevw=start
+for w in 'bb_lock logs/.build-board.lock' 'wbox_env_reset' 'sh scripts/check-golang-rules.sh' 'wbox_apply "$WBOX" feeds/batman' 'wbox_normal_check feeds/batman' 'wbox_stamp_begin "$WBSTAMP" "$WBNOW" wbclean' 'make -j"$JOBS"' 'wbox_stamp_done "$WBSTAMP" "$WBNOW"' 'bash scripts/check-prov-test-gate.sh'; do
+	n=$(ln "$w"); if [ -n "$n" ] && [ "$n" -gt "$prev" ]; then res 1 "build-board.sh order: $prevw < $w"; else res 0 "build-board.sh order" "$w at line [$n], not after $prevw (line $prev)"; fi
+	prev=${n:-0}; prevw=$w
+done
 echo "RESULT build-board wbox test: $pass ok, $bad bad"; [ $bad = 0 ] && [ $pass -gt 0 ]
