@@ -54,7 +54,9 @@ printf '# wbox nowit: no witness line\n+++ b/feed/batman-provision/files/etc/uci
 printf '# wbox misc-l38: autocommit mutant\n# wbox-witness: WBOX-misc-l38-6a1c9e30\n+++ b/feed/batman-provision/files/usr/bin/batman-autocommit\n' > $T/wbox/misc-l38.patch
 # mk <dir> <helper> <version> [wbox] [witness...] — witnesses ending in .rcd make etc/rc.d/<name> instead
 mk(){ local d=$T/$1 h=$2 v=$3 wb=${4:-} i=0; shift 3; [ $# -gt 0 ] && shift
-  mkdir -p $d/etc/rc.d $d/usr/bin; cp $h $d/usr/bin/batman-provhelper
+  mkdir -p $d/etc/rc.d $d/usr/bin $d/usr/sbin; cp $h $d/usr/bin/batman-provhelper
+  printf 'wbox_gate_self\nwbox_gate_target "$T"\necho "holds a -wbox test image"\n' > $d/usr/sbin/batman-slot
+  printf 'WBOX_STATE=release\nwtag=WBOX-NOCOMMIT\n' > $d/usr/bin/batman-autocommit
   { echo "BATMAN_VERSION=$v"; [ -n "$wb" ] && echo "BATMAN_WBOX=$wb"; } > $d/etc/batman-build
   for x in "$@"; do case "$x" in *.rcd) touch $d/etc/rc.d/${x%.rcd} ;; *) i=$((i+1)); echo "$x" > $d/etc/wbox-witness-$i ;; esac; done
   echo $d; }
@@ -138,5 +140,51 @@ if [ "$a" = "$b" ] && [ ! -e $T/go-sentinel ] && ! echo "$c2" | grep -q 'helpers
 # --selftest-* is passed only by this self-test (the gate parses it): no other script may pass it
 hits=$(grep -rln -- '--selftest-' $FW/scripts $FW/.github 2>/dev/null | grep -v -e 'scripts/check-prov-test-gate.sh$' -e 'scripts/test-prov-test-gate.sh$' || true)
 if [ -z "$hits" ]; then pass=$((pass+1)); echo "ok   --selftest-* appears only in the gate and its self-test"; else bad=$((bad+1)); echo "BAD  --selftest-* used in: $hits"; fi
+# ---- review A-M1 / B-M1: a wbox image must carry the node-side product gate (a pre-gate pin builds wbox images whose
+# healthy trial would be committed)
+d=$(mk rz $T/h-pt $V.dirty.wbox-test test); : > $d/usr/sbin/batman-slot
+want FAIL:"without the node gate" "wbox test built from a pre-gate pin (batman-slot without wbox_gate_self)" $d test
+d=$(mk rz2 $T/h-rel $V.dirty.wbox-96-noprov 96-noprov WBOX-96-noprov-0a1b2c3d); sed -i '/WBOX-NOCOMMIT/d' $d/usr/bin/batman-autocommit
+want FAIL:"without the node gate" "wbox 96-noprov whose autocommit lacks WBOX-NOCOMMIT" $d 96-noprov
+d=$(mk rz3 $T/h-rel $V); : > $d/usr/sbin/batman-slot
+want PASS "normal build without the node gate strings (the gate is only required in wbox images)" $d
+# ---- review A-M2: F5's WBOX_DIR half — wbox mode WITHOUT --selftest-wbox-dir and a decoy WBOX_DIR in the environment:
+# the decoy lists the variant, the tree's own list does not; the gate must not read the decoy
+mkdir -p $T/decoy2; printf 'decoyonly release same\n' > $T/decoy2/helpers.list; printf '# wbox decoyonly: x\n# wbox-witness: WBOX-decoyonly-0e0e0e0e\n' > $T/decoy2/decoyonly.patch
+d=$(mk rd $T/h-rel $V.dirty.wbox-decoyonly decoyonly WBOX-decoyonly-0e0e0e0e)
+a=$(env -u WBOX_DIR -u GO bash $G $d decoyonly --selftest-go $GO 2>&1; echo "rc=$?")
+b=$(env WBOX_DIR=$T/decoy2 GO=$T/sentinel-go bash $G $d decoyonly --selftest-go $GO 2>&1; echo "rc=$?")
+if [ "$a" = "$b" ] && ! grep -q 'check-prov-test-gate: ok' <<< "$b" && [ ! -e $T/go-sentinel ]; then pass=$((pass+1)); echo "ok   F5 WBOX_DIR: a decoy WBOX_DIR in the environment is not read (wbox mode, no option): $(echo "$b" | head -1)"
+else bad=$((bad+1)); echo "BAD  F5 WBOX_DIR: env changed the wbox-mode gate — a=[$a] b=[$b]"; fi
+# ---- review A-M3: scripts/gate-rootfs.sh (local-ab-tar / fast-build / build-board step 7) on real squashfs images
+GR=$FW/scripts/gate-rootfs.sh
+MKSQ=$FW/staging_dir/host/bin/mksquashfs4; command -v mksquashfs >/dev/null && MKSQ=mksquashfs
+if [ ! -x "$MKSQ" ] && ! command -v "$MKSQ" >/dev/null; then bad=$((bad+1)); echo "BAD  no mksquashfs (host or staging_dir) — the gate-rootfs cases cannot run"; else
+sq(){ "$MKSQ" "$1" "$2" -all-root -noappend -quiet >/dev/null 2>&1 || { echo "mksquashfs $1 failed"; exit 1; }; }
+gr(){ local exp=$1 name=$2; shift 2; out=$(bash $GR "$@" 2>&1); rc=$?
+	case "$exp" in PASS) [ $rc = 0 ] && ok=1 || ok=0 ;; *) [ $rc != 0 ] && case "$out" in *"${exp#FAIL:}"*) ok=1 ;; *) ok=0 ;; esac || ok=0 ;; esac
+	if [ $ok = 1 ]; then pass=$((pass+1)); echo "ok   gate-rootfs: $name — $(echo "$out" | tail -1)"; else bad=$((bad+1)); echo "BAD  gate-rootfs want $exp: $name — rc=$rc $(echo "$out" | tr '\n' ' ' | cut -c1-200)"; fi; }
+sq "$(mk sqa $T/h-rel $V)" $T/a.sq;                               gr PASS "normal squashfs, release helper" $T/a.sq
+sq "$(mk sqb $T/h-pt $V)" $T/b.sq;                                gr FAIL:"-tags prov_test" "normal squashfs, prov_test helper (no wbox stamp)" $T/b.sq
+d=$(mk sqc $T/h-rel $V); mkdir -p $d/usr/sbin; cp $T/h-pt $d/usr/sbin/hidden; sq $d $T/c.sq
+gr FAIL:"rootfs carries a test seam" "normal squashfs, a prov_test binary under another name (F3)" $T/c.sq
+sq "$(mk sqd $T/h-pt $V.dirty.wbox-test test)" $T/d.sq;           gr FAIL:"carries BATMAN_WBOX=test" "--normal (CI) on a wbox image" $T/d.sq --normal
+# an extraction that misses a file: unsquashfs on PATH that drops one regular file after extracting
+mkdir -p $T/stubus; RUS=$FW/staging_dir/host/bin/unsquashfs4; command -v unsquashfs >/dev/null && RUS=$(command -v unsquashfs)
+printf '%s\n' '#!/bin/bash' "\"$RUS\" \"\$@\"; r=\$?" 'd=""; prev=""; for a in "$@"; do [ "$prev" = -d ] && d=$a; prev=$a; done' '[ -n "$d" ] && f=$(find "$d" -type f | head -1) && [ -n "$f" ] && rm -f "$f"' 'exit $r' > $T/stubus/unsquashfs; chmod 755 $T/stubus/unsquashfs
+out=$(PATH=$T/stubus:$PATH bash $GR $T/a.sq 2>&1); rc=$?
+[ $rc != 0 ] && grep -q "extraction incomplete" <<< "$out" && { pass=$((pass+1)); echo "ok   gate-rootfs: an extraction that missed a file -> FAIL ($out)"; } || { bad=$((bad+1)); echo "BAD  gate-rootfs: incomplete extraction not caught — rc=$rc $out"; }
+gr FAIL:"no squashfs" "missing squashfs" $T/none.sq
+fi
+# structural: every payload path calls gate-rootfs.sh before it packs / uploads
+LAT=$FW/scripts/local-ab-tar.sh; FB=$FW/.github/workflows/fast-build.yml; BB=$FW/scripts/build-board.sh
+g=$(grep -n 'scripts/gate-rootfs.sh" "$T/root.squashfs"' $LAT | head -1 | cut -d: -f1); p=$(grep -n '^sh "$PAYLOAD_SH"' $LAT | head -1 | cut -d: -f1)
+[ -n "$g" ] && [ -n "$p" ] && [ "$g" -lt "$p" ] && { pass=$((pass+1)); echo "ok   local-ab-tar gates the rootfs (line $g) before it packs (line $p)"; } || { bad=$((bad+1)); echo "BAD  local-ab-tar: gate line [$g] not before the pack line [$p]"; }
+st=$(awk '/^      - name: /{n=$0} /gate-rootfs.sh root.squashfs --normal/{print n; exit}' $FB)
+up=$(grep -n '^      - name: Upload build artifacts$' $FB | cut -d: -f1); gl=$(grep -n 'gate-rootfs.sh root.squashfs --normal' $FB | head -1 | cut -d: -f1)
+blk=$(awk -v s="$st" '$0==s{f=1;next} f && /^      - name: /{exit} f' $FB)
+[ -n "$st" ] && [ -n "$gl" ] && [ "$gl" -lt "${up:-0}" ] && ! grep -q 'continue-on-error' <<< "$blk" && { pass=$((pass+1)); echo "ok   fast-build: gate step ($st) before the upload, without continue-on-error"; } || { bad=$((bad+1)); echo "BAD  fast-build gate step [$st] line [$gl] upload [$up] coe=[$(grep -c continue-on-error <<< "$blk")]"; }
+e=$(grep -n 'scripts/gate-rootfs.sh --extract "$ROOTSQ" "$WR/r"' $BB | head -1 | cut -d: -f1); c=$(grep -n 'bash scripts/check-prov-test-gate.sh "$WR/r"' $BB | head -1 | cut -d: -f1)
+[ -n "$e" ] && [ -n "$c" ] && [ "$e" -lt "$c" ] && ! grep -q 'unsquashfs4\?" -q -no-xattrs -f -d "$WR/r"' $BB && { pass=$((pass+1)); echo "ok   build-board step 7 extracts through gate-rootfs.sh --extract (line $e) before its gates (line $c)"; } || { bad=$((bad+1)); echo "BAD  build-board step 7: extract [$e] gate [$c] (or an own unsquashfs extraction is back)"; }
 want FAIL:"not extracted"         "no rootfs"                            $T/missing
 echo "RESULT gate self-test: $pass ok, $bad bad"; [ $bad = 0 ] && [ $pass -gt 0 ]

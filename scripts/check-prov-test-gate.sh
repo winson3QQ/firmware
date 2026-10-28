@@ -9,7 +9,8 @@
 #   BATMAN_WBOX=NAME and a .dirty.wbox-NAME version; its witness string present and no other variant's;
 #   a prov_test variant's helper carries the marker AND the armed-killpoint format literal (the seam was compiled
 #   in, not left in a _test.go file); a release variant's Go helper carries no seam at all (same rules as a normal
-#   build); an init mutant is enabled (etc/rc.d/S??wbox-*).
+#   build); an init mutant is enabled (etc/rc.d/S??wbox-*); the node-side product gate (batman-slot wbox_gate_self /
+#   wbox_gate_target, autocommit WBOX_STATE / WBOX-NOCOMMIT) is in the image.
 # Any input that cannot be read is a FAIL, never a pass.
 #
 # Self-test overrides come ONLY as options (security review F5, design 254-h23 §20.5 / §23.5): environment variables
@@ -84,6 +85,14 @@ if [ -z "$NAME" ]; then
 fi
 
 case "$NAME" in *[!a-z0-9-]*|'') fail "bad wbox name '$NAME'" ;; esac
+# the node-side product gate (Batman 5a7e9f3, security review F1) must be in every wbox image: built from a pre-gate pin,
+# a healthy trial of the mutant would be committed (code review A-M1 / B-M1). Regular files, not symlinks.
+for kv in "usr/sbin/batman-slot:wbox_gate_self" "usr/sbin/batman-slot:wbox_gate_target" "usr/sbin/batman-slot:holds a -wbox test image" \
+	"usr/bin/batman-autocommit:WBOX_STATE" "usr/bin/batman-autocommit:WBOX-NOCOMMIT"; do
+	f=$R/${kv%%:*}; s=${kv#*:}
+	[ -f "$f" ] && [ ! -L "$f" ] || fail "wbox image without ${kv%%:*} (or it is a symlink)"
+	grep -qF -- "$s" "$f" || fail "wbox image without the node gate ('$s' missing in ${kv%%:*}) — built from a pre-gate Batman pin"
+done
 [ "$WB" = "$NAME" ] || fail "/etc/batman-build BATMAN_WBOX=[$WB], want $NAME"
 case "$VER" in *.dirty.wbox-"$NAME") ;; *) fail "version $VER does not end in .dirty.wbox-$NAME" ;; esac
 WD=${OPT_WD:-$TOP/feeds/batman/tests/wbox}   # --selftest-wbox-dir only; never from the environment
