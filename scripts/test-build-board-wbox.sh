@@ -57,13 +57,17 @@ git -C $F apply tests/wbox/chan.patch
 no_case "leftover mutant -> refused" helper-notrial "is not clean"
 [ -f $F/feed/batman-provision/files/etc/init.d/wbox-chan ] && res 1 "leftover kept for inspection" || res 0 "leftover kept for inspection" "wiped"
 git -C $F clean -qfdx; clean && res 1 "feed clean again" || res 0 "feed clean again" "$(git -C $F status --porcelain)"
-# a SIGTERM / SIGINT mid-build still restores (bash runs the EXIT trap on a fatal signal it handles: build-board.sh
-# is killed while make runs; here the child sleeps instead of make)
 for sig in TERM INT; do
-	bash -c '. "$1"; set -e; wbox_apply chan "$2" >/dev/null; trap "exit 143" TERM; trap "exit 130" INT; sleep 30 & wait' _ "$LIB" "$F" & p=$!
+	# like build-board.sh under a terminal: no trap but the lib's EXIT trap, the long step (here sleep, there make) in
+	# the FOREGROUND, the job in its own process group with SIGINT/SIGTERM at their defaults, and the signal sent to the
+	# whole group (what Ctrl-C does). No helper trap that would make the case pass on its own.
+	setsid perl -e '$SIG{INT}="DEFAULT"; $SIG{TERM}="DEFAULT"; exec @ARGV or die' \
+		bash -c '. "$1"; set -e; wbox_apply chan "$2" >/dev/null; sleep 30' _ "$LIB" "$F" & p=$!
 	for i in $(seq 50); do [ -f $F/feed/batman-provision/files/etc/init.d/wbox-chan ] && break; sleep 0.1; done
-	kill -$sig $p; wait $p 2>/dev/null
-	clean && res 1 "SIG$sig mid-build -> restored" || res 0 "SIG$sig mid-build -> restored" "$(git -C $F status --porcelain --ignored | tr '\n' ' ')"
+	[ -f $F/feed/batman-provision/files/etc/init.d/wbox-chan ] || res 0 "SIG$sig mid-build" "patch never applied"
+	kill -$sig -- -$p; for i in $(seq 100); do kill -0 $p 2>/dev/null || break; sleep 0.1; done
+	wait $p 2>/dev/null; rc=$?
+	clean && [ $rc -ge 128 ] && res 1 "SIG$sig to the job's group mid-build -> rc $rc, restored" || res 0 "SIG$sig mid-build -> restored" "rc=$rc $(git -C $F status --porcelain --ignored | tr '\n' ' ')"
 done
 # environment from the calling shell never reaches a normal build
 o=$(env BATMAN_WBOX=chan BATMAN_PROV_TEST=1 bash -c '. "$1"; wbox_env_reset; echo "[${BATMAN_WBOX:-}][${BATMAN_PROV_TEST:-}]"' _ "$LIB")
