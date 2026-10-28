@@ -5,32 +5,52 @@
 #   h-mut   prov_test build whose seam stayed in a _test.go file (marker, no armed literal)
 #   h-mark  release build that carries the marker string only
 #   h-kp    release build that carries a "killpoint" string only
+#   h-names release build that carries a point name only; h-nomark prov_test build without the marker
 #   BATMAN_SRC=<batman-prov/src> [GO=<go>] scripts/test-prov-test-gate.sh
 set -u
 FW=$(cd "$(dirname "$0")/.." && pwd); G=$FW/scripts/check-prov-test-gate.sh
 SRC=${BATMAN_SRC:?BATMAN_SRC = a batman-prov/src with the seam package}
+# the pinned Batman must carry the P1b seams (seam/points.go + seam/seam_provtest.go): an older pin cannot build the
+# helpers this test needs. Say so plainly instead of failing on a mutant (r2 A-m3 / B-m8). Merge order: Batman P1b
+# first, then the firmware PR that pins it.
+[ -f "$SRC/seam/points.go" ] && [ -f "$SRC/seam/seam_provtest.go" ] || {
+	echo "BATMAN_SRC $SRC predates the #254 P1b seams (no seam/points.go / seam/seam_provtest.go): pin a Batman that has them"; exit 1; }
 GO=${GO:-$FW/staging_dir/hostpkg/lib/go-$(sed -n 's/^GO_DEFAULT_VERSION:=//p' $FW/feeds/openmanet/lang/golang/golang-values.mk | head -1)/bin/go}
 [ -x "$GO" ] || { echo "no Go at $GO"; exit 1; }
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export GOFLAGS=-mod=vendor GOTOOLCHAIN=local GOCACHE=$T/gocache GOARCH=arm64 CGO_ENABLED=0
-b(){ (cd "$1" && "$GO" build -trimpath -buildvcs=false ${2:+-tags $2} -ldflags='-s -w' -o "$3" ./cmd/batman-provhelper) || { echo "build failed"; exit 1; }; }
+b(){ (cd "$1" && "$GO" build -trimpath -buildvcs=false ${2:+-tags $2} -ldflags='-s -w' -o "$3" ./cmd/batman-provhelper) || { echo "build of $3 failed"; exit 1; }; }
+sc(){ strings "$1" | grep -c -- "$2"; }
+# need <helper> <pattern> <op> <n> — every helper is checked to be what its case assumes before any case runs
+need(){ [ "$(sc "$1" "$2")" "$3" "$4" ] || { echo "precondition: $(basename "$1") has $(sc "$1" "$2") x [$2], want $3 $4"; exit 1; }; }
 b "$SRC" "" $T/h-rel; b "$SRC" prov_test $T/h-pt
-cp -r "$SRC" $T/msrc; mv $T/msrc/seam/seam_provtest.go $T/msrc/seam/zz_impl_test.go; rm -f $T/msrc/seam/hook_provtest.go
+need $T/h-rel killpoint -eq 0; need $T/h-rel BATMAN_PROV_TEST_BUILD_7f3a -eq 0; need $T/h-pt 'killpoint .*: armed' -ge 1; need $T/h-pt BATMAN_PROV_TEST_BUILD_7f3a -ge 1
+# h-mut: the seam implementation moved into a _test.go file (not linked) behind a stub with the marker
+cp -r "$SRC" $T/msrc; mv $T/msrc/seam/seam_provtest.go $T/msrc/seam/zz_impl_test.go; rm -f $T/msrc/seam/hook_provtest.go $T/msrc/seam/*_test.go $T/msrc/node/seam_points_test.go
 sed -i 's#^//go:build !prov_test#//go:build never#' $T/msrc/seam/seam_release.go
-printf '//go:build prov_test\n\npackage seam\n\nconst Marker = "BATMAN_PROV_TEST_BUILD_7f3a"\nconst Enabled = true\n\nfunc Arm(func(string, ...any))         {}\nfunc At(string, func(string, ...any)) {}\n' > $T/msrc/seam/stub.go
-rm -f $T/msrc/node/seam_points_test.go
-b $T/msrc prov_test $T/h-mut
-cp -r "$SRC" $T/ksrc; sed -i 's#^const Marker = ""#const Marker = "BATMAN_PROV_TEST_BUILD_7f3a"#' $T/ksrc/seam/seam_release.go
-grep -q 'BATMAN_PROV_TEST_BUILD_7f3a' $T/ksrc/seam/seam_release.go || { echo "h-mark mutant not applied"; exit 1; }
-b $T/ksrc "" $T/h-mark; [ "$(strings $T/h-mark | grep -c BATMAN_PROV_TEST_BUILD_7f3a)" -ge 1 ] || { echo "h-mark mutant carries no marker"; exit 1; }
-cp -r "$SRC" $T/psrc; printf '\nvar kpProbe int\n\nfunc init() {\n\tif kpProbe > 0 {\n\t\tprintln("killpoint probe")\n\t}\n}\n' >> $T/psrc/seam/seam_release.go
-b $T/psrc "" $T/h-kp; [ "$(strings $T/h-kp | grep -c killpoint)" -ge 1 ] || { echo "h-kp mutant carries no killpoint string"; exit 1; }
+printf '//go:build prov_test\n\npackage seam\n\nconst Marker = "BATMAN_PROV_TEST_BUILD_7f3a"\nconst Enabled = true\n\nfunc Arm(func(string, ...any))        {}\nfunc At(Point, func(string, ...any)) {}\n' > $T/msrc/seam/stub.go
+b $T/msrc prov_test $T/h-mut; need $T/h-mut BATMAN_PROV_TEST_BUILD_7f3a -ge 1; need $T/h-mut 'killpoint .*: armed' -eq 0
+# h-nomark: a prov_test build whose marker is gone (armed literal still there)
+cp -r "$SRC" $T/nsrc; sed -i 's#^const Marker = "BATMAN_PROV_TEST_BUILD_7f3a"#const Marker = "NOT_THE_MARKER"#' $T/nsrc/seam/seam_provtest.go
+b $T/nsrc prov_test $T/h-nomark; need $T/h-nomark BATMAN_PROV_TEST_BUILD_7f3a -eq 0; need $T/h-nomark 'killpoint .*: armed' -ge 1
+# h-mark / h-kp / h-names: release builds that carry one forbidden string each (a runtime-guarded println keeps it)
+probe(){ printf '\nvar probe%s int\n\nfunc init() {\n\tif probe%s > 0 {\n\t\tprintln("%s")\n\t}\n}\n' "$1" "$1" "$2"; }
+cp -r "$SRC" $T/ksrc; probe M BATMAN_PROV_TEST_BUILD_7f3a >> $T/ksrc/seam/seam_release.go; b $T/ksrc "" $T/h-mark
+need $T/h-mark BATMAN_PROV_TEST_BUILD_7f3a -ge 1; need $T/h-mark killpoint -eq 0
+cp -r "$SRC" $T/psrc; probe K "killpoint probe" >> $T/psrc/seam/seam_release.go; b $T/psrc "" $T/h-kp
+need $T/h-kp killpoint -ge 1; need $T/h-kp BATMAN_PROV_TEST_BUILD_7f3a -eq 0
+cp -r "$SRC" $T/qsrc; probe N claim-before-shadow >> $T/qsrc/seam/seam_release.go; b $T/qsrc "" $T/h-names
+need $T/h-names claim-before-shadow -ge 1; need $T/h-names killpoint -eq 0; need $T/h-names BATMAN_PROV_TEST_BUILD_7f3a -eq 0
 mkdir -p $T/wbox
-printf 'test prov_test helper\nhelper-notrial prov_test helper\n96-noprov release same\nchan release same\ntypo prov-test helper\n' > $T/wbox/helpers.list
+printf 'test prov_test helper\nhelper-notrial prov_test helper\n96-noprov release same\nchan release same\ntypo prov-test helper\nkindtypo prov_test hlper\nsamept prov_test same\nbadwit release same\ninitx release same\nhelper-exit1 release helper\nnopatch release same\nnowit release same\n' > $T/wbox/helpers.list
 printf '# wbox 96-noprov: 96 does not copy prov\n# wbox-witness: WBOX-96-noprov-0a1b2c3d\n+++ b/feed/batman-provision/files/etc/uci-defaults/96\n' > $T/wbox/96-noprov.patch
 printf '# wbox chan: channel mutant\n# wbox-witness: WBOX-chan-11223344\n+++ b/feed/batman-provision/files/etc/init.d/wbox-chan\n' > $T/wbox/chan.patch
 printf '# wbox helper-notrial\n# wbox-witness: WBOX-helper-notrial-55667788\n+++ b/feed/batman-prov/src/node/node.go\n' > $T/wbox/helper-notrial.patch
 printf '# wbox typo\n# wbox-witness: WBOX-typo-99aabbcc\n' > $T/wbox/typo.patch
+printf '# wbox badwit\n# wbox-witness: WBOX-badwit-zz\n' > $T/wbox/badwit.patch
+printf '# wbox initx: init mutant in another package\n# wbox-witness: WBOX-initx-0badf00d\n+++ b/feed/batman-prov/files/etc/init.d/wbox-initx\n' > $T/wbox/initx.patch
+printf '# wbox helper-exit1\n# wbox-witness: WBOX-helper-exit1-1234abcd\n+++ b/feed/batman-prov/files/usr/bin/batman-provhelper\n' > $T/wbox/helper-exit1.patch
+printf '# wbox nowit: no witness line\n+++ b/feed/batman-provision/files/etc/uci-defaults/97\n' > $T/wbox/nowit.patch
 # mk <dir> <helper> <version> [wbox] [witness...] — witnesses ending in .rcd make etc/rc.d/<name> instead
 mk(){ local d=$T/$1 h=$2 v=$3 wb=${4:-} i=0; shift 3; [ $# -gt 0 ] && shift
   mkdir -p $d/etc/rc.d $d/usr/bin; cp $h $d/usr/bin/batman-provhelper
@@ -71,5 +91,34 @@ want PASS                         "wbox chan, enabled"                   $(mk w8
 want FAIL:"init mutant not enabled" "wbox chan, not enabled"             $(mk w9 $T/h-rel $V.dirty.wbox-chan chan WBOX-chan-11223344) chan
 want FAIL:"not in helpers.list"   "wbox name not in helpers.list"        $(mk wa $T/h-pt $V.dirty.wbox-nope nope) nope
 want FAIL:"tag 'prov-test'"       "helpers.list tag typo"                $(mk wb $T/h-pt $V.dirty.wbox-typo typo WBOX-typo-99aabbcc) typo
+want FAIL:"names a wbox variant"  "normal build, version names a wbox variant" $(mk r7 $T/h-rel $V.dirty.wbox-x)
+want FAIL:"point names"           "normal build, point names only"       $(mk r8 $T/h-names $V)
+d=$(mk r9 $T/h-rel $V); rm $d/usr/bin/batman-provhelper; ln -s $T/h-rel $d/usr/bin/batman-provhelper
+want FAIL:"is a symlink"          "normal build, helper is an absolute symlink to a host file" $d
+d=$(mk ra $T/h-rel $V); out=$(GO=$T/no-go bash $G $d 2>&1); rc=$?
+case "$out" in *"cannot read its build info"*) [ $rc != 0 ] && { pass=$((pass+1)); echo "ok   ELF helper but no host Go — $out"; } || { bad=$((bad+1)); echo "BAD  ELF/no Go rc=$rc $out"; } ;; *) bad=$((bad+1)); echo "BAD  ELF/no Go: $out" ;; esac
+want FAIL:"bad wbox name"         "wbox name with bad characters"        $(mk rb $T/h-pt $V.dirty.wbox-Bad_Name Bad_Name) Bad_Name
+want FAIL:"without the marker"    "wbox test, prov_test helper without the marker" $(mk rc $T/h-nomark $V.dirty.wbox-test test) test
+want FAIL:"is not WBOX-badwit-<8 hex>" "witness of the wrong format"     $(mk rd $T/h-rel $V.dirty.wbox-badwit badwit WBOX-badwit-zz) badwit
+want FAIL:"helper column 'hlper'" "helpers.list helper column typo"      $(mk re $T/h-pt $V.dirty.wbox-kindtypo kindtypo) kindtypo
+want FAIL:"is 'same' but tag prov_test" "'same' with a prov_test tag"    $(mk rf $T/h-pt $V.dirty.wbox-samept samept) samept
+want FAIL:"ships the release helper ('same') but the helper is not a Go binary" "'same' variant with a shell-script helper" $(mk rg $T/h-sh $V.dirty.wbox-96-noprov 96-noprov WBOX-96-noprov-0a1b2c3d) 96-noprov
+want PASS                         "helper-exit1 (shell-script helper, release, helper)" $(mk rh $T/h-sh $V.dirty.wbox-helper-exit1 helper-exit1 WBOX-helper-exit1-1234abcd) helper-exit1
+want FAIL:"init mutant not enabled" "init mutant in another package, not enabled" $(mk ri $T/h-rel $V.dirty.wbox-initx initx WBOX-initx-0badf00d) initx
+want PASS                         "init mutant in another package, enabled" $(mk rj $T/h-rel $V.dirty.wbox-initx initx WBOX-initx-0badf00d S95wbox-initx.rcd) initx
+want FAIL:"point names"           "release variant, point names only"    $(mk rk $T/h-names $V.dirty.wbox-chan chan WBOX-chan-11223344 S99wbox-chan.rcd) chan
+d=$(mk rl $T/h-rel $V); rm $d/etc/batman-build
+want FAIL:"has no /etc/batman-build" "rootfs without /etc/batman-build"  $d
+d=$(mk rm $T/h-rel $V); rm $d/usr/bin/batman-provhelper
+want FAIL:"has no /usr/bin/batman-provhelper" "rootfs without the helper" $d
+mkdir -p $T/nostrings; for t in sed awk grep head sort tr ls dirname cat; do ln -sf "$(command -v $t)" $T/nostrings/$t; done
+d=$(mk rn $T/h-rel $V); out=$(PATH=$T/nostrings GO=$GO $(command -v bash) $G $d 2>&1); rc=$?
+case "$out" in *"no strings(1)"*) [ $rc != 0 ] && { pass=$((pass+1)); echo "ok   no strings(1) on the host — $out"; } || { bad=$((bad+1)); echo "BAD  no strings rc=$rc"; } ;; *) bad=$((bad+1)); echo "BAD  no strings: rc=$rc $out" ;; esac
+want FAIL:"BATMAN_WBOX=[test], want chan" "BATMAN_WBOX line names another variant" $(mk ro $T/h-rel $V.dirty.wbox-chan test WBOX-chan-11223344 S99wbox-chan.rcd) chan
+d=$(mk rp $T/h-pt $V.dirty.wbox-test test); out=$(WBOX_DIR=$T/no-such-dir GO=$GO bash $G $d test 2>&1); rc=$?
+case "$out" in *"no $T/no-such-dir/helpers.list"*) [ $rc != 0 ] && { pass=$((pass+1)); echo "ok   no helpers.list — $out"; } || { bad=$((bad+1)); echo "BAD  no helpers.list rc=$rc"; } ;; *) bad=$((bad+1)); echo "BAD  no helpers.list: rc=$rc $out" ;; esac
+want FAIL:"prov_test variant but the helper is not a Go binary" "prov_test variant with a shell-script helper" $(mk rq $T/h-sh $V.dirty.wbox-test test) test
+want FAIL:"FAIL: no $T/wbox/nopatch.patch"         "helpers.list entry without a patch"   $(mk rr $T/h-rel $V.dirty.wbox-nopatch nopatch) nopatch
+want FAIL:"has no '# wbox-witness:' line" "patch without a witness line" $(mk rs $T/h-rel $V.dirty.wbox-nowit nowit) nowit
 want FAIL:"not extracted"         "no rootfs"                            $T/missing
 echo "RESULT gate self-test: $pass ok, $bad bad"; [ $bad = 0 ] && [ $pass -gt 0 ]

@@ -26,6 +26,7 @@ witnesses(){ local o rc; o=$(cd "$R" && grep -rhaoE 'WBOX-[a-z0-9-]+-[0-9a-f]{8}
 
 [ -d "$R/etc" ] || fail "rootfs '$R' not extracted (no etc/)"
 [ -f "$R/etc/batman-build" ] || fail "rootfs has no /etc/batman-build"
+[ ! -L "$H" ] || fail "rootfs /usr/bin/batman-provhelper is a symlink (an absolute one would make this gate read a build-host file)"
 [ -f "$H" ] || fail "rootfs has no /usr/bin/batman-provhelper"
 command -v strings >/dev/null || fail "no strings(1) on the build host"
 GOV=$(sed -n 's/^GO_DEFAULT_VERSION:=//p' "$TOP"/feeds/openmanet/lang/golang/golang-values.mk 2>/dev/null | head -1)
@@ -44,6 +45,7 @@ noseam(){
 	case ",$TAGS," in *,prov_test,*) fail "$1: helper built with -tags $TAGS" ;; esac
 	[ "$(cnt BATMAN_PROV_TEST_BUILD_7f3a)" = 0 ] || fail "$1: helper carries the prov_test marker"
 	[ "$(cnt killpoint)" = 0 ] || fail "$1: helper carries killpoint strings ($(cnt killpoint))"
+	[ "$(cnt 'claim-after-persist\|claim-before-shadow')" = 0 ] || fail "$1: helper carries killpoint point names"
 }
 
 if [ -z "$NAME" ]; then
@@ -64,7 +66,15 @@ WD=${WBOX_DIR:-$TOP/feeds/batman/tests/wbox}   # override only for the gate self
 LIST=$WD/helpers.list
 [ -f "$LIST" ] || fail "no $LIST"
 TAG=$(awk -v n="$NAME" '$1 == n { print $2; exit }' "$LIST")
+KIND=$(awk -v n="$NAME" '$1 == n { print $3; exit }' "$LIST")
 [ -n "$TAG" ] || fail "$NAME not in helpers.list"
+# column 3: `helper` = the variant ships its own helper; `same` = the release helper (a Go binary without any seam)
+case "$KIND" in
+	helper) ;;
+	same) [ "$TAG" = release ] || fail "helpers.list: $NAME is 'same' but tag $TAG"
+		[ "$ISGO" = 1 ] || fail "$NAME ships the release helper ('same') but the helper is not a Go binary" ;;
+	*) fail "helpers.list helper column '$KIND' for $NAME (want helper or same)" ;;
+esac
 case "$TAG" in
 	prov_test)
 		[ "$ISGO" = 1 ] || fail "prov_test variant but the helper is not a Go binary"
@@ -83,11 +93,11 @@ if [ "$NAME" != test ]; then
 	[ -n "$WANT" ] || fail "$P has no '# wbox-witness:' line"
 	case "$WANT" in WBOX-"$NAME"-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
 		*) fail "$P witness '$WANT' is not WBOX-$NAME-<8 hex>" ;; esac
-	if grep -q '^+++ b/feed/batman-provision/files/etc/init.d/wbox-' "$P"; then
+	if grep -qE '^\+\+\+ b/.*/files/etc/init\.d/wbox-' "$P"; then   # an init mutant of any package (r1 A-m4)
 		ls "$R"/etc/rc.d/S??wbox-* >/dev/null 2>&1 || fail "init mutant not enabled (no etc/rc.d/S??wbox-*)"
 	fi
 fi
 # exactly this variant's witness (none for `test`): a mutant left behind by an earlier killed build is a FAIL
 witnesses
 [ "$W" = "$WANT" ] || fail "wbox witnesses in the rootfs [$W], want [$WANT] only"
-echo "check-prov-test-gate: ok (wbox $NAME, tag $TAG, helper tags=[${TAGS}])"
+echo "check-prov-test-gate: ok (wbox $NAME, tag $TAG, $KIND, helper tags=[${TAGS}])"
