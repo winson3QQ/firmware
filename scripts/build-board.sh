@@ -140,6 +140,13 @@ if [ "$CARD_ONLY" = 0 ]; then
 	say "4 stamp"
 	sh scripts/stamp-batman-build.sh "$BOARD"
 	cp files/etc/batman-build "$STAMP"
+	# #254 P2 (Batman docs/design/254-p2-impl.md §4.8): the BLE advertising-data bounds backport must be the pinned
+	# Batman master copy byte for byte — pin drift is refused here, not found on a node
+	KP=999-batman-eir-adv-flags-oob-254.patch
+	cmp -s "target/linux/bcm27xx/patches-6.6/$KP" "feeds/batman/scripts/dv/data/$KP" || {
+		echo "target/linux/bcm27xx/patches-6.6/$KP differs from feeds/batman/scripts/dv/data/$KP (or one is missing) — refusing to build" >&2
+		exit 1
+	}
 
 	say "5 make -j$JOBS"
 	# #252: OpenWrt's rebuild check hashes only a package's own directory, not the golang rules it

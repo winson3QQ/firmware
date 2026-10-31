@@ -24,6 +24,14 @@ sc(){ strings "$1" | grep -c -- "$2"; }
 # need <helper> <pattern> <op> <n> — every helper is checked to be what its case assumes before any case runs
 need(){ [ "$(sc "$1" "$2")" "$3" "$4" ] || { echo "precondition: $(basename "$1") has $(sc "$1" "$2") x [$2], want $3 $4"; exit 1; }; }
 b "$SRC" "" $T/h-rel; b "$SRC" prov_test $T/h-pt
+# #254 P2: batman-provd release / prov_test builds (only when BATMAN_SRC has provd)
+HAVE_PROVD=0
+if [ -d "$SRC/cmd/batman-provd" ]; then
+	HAVE_PROVD=1
+	(cd "$SRC" && "$GO" build -trimpath -buildvcs=false -ldflags='-s -w' -o $T/p-rel ./cmd/batman-provd \
+		&& "$GO" build -trimpath -buildvcs=false -tags prov_test -ldflags='-s -w' -o $T/p-pt ./cmd/batman-provd) || { echo "provd build failed"; exit 1; }
+	need $T/p-rel SOCK_ONLY -eq 0; need $T/p-pt SOCK_ONLY -ge 1
+fi
 need $T/h-rel killpoint -eq 0; need $T/h-rel BATMAN_PROV_TEST_BUILD_7f3a -eq 0; need $T/h-pt 'killpoint .*: armed' -ge 1; need $T/h-pt BATMAN_PROV_TEST_BUILD_7f3a -ge 1
 # h-mut: the seam implementation moved into a _test.go file (not linked) behind a stub with the marker
 cp -r "$SRC" $T/msrc; mv $T/msrc/seam/seam_provtest.go $T/msrc/seam/zz_impl_test.go; rm -f $T/msrc/seam/hook_provtest.go $T/msrc/seam/*_test.go $T/msrc/node/seam_points_test.go
@@ -70,6 +78,23 @@ want(){ local exp=$1 name=$2; shift 2; out=$(env -u GO -u WBOX_DIR timeout 30 ba
   if [ $ok = 1 ]; then pass=$((pass+1)); echo "ok   $name — $out"; else bad=$((bad+1)); echo "BAD  want $exp: $name — rc=$rc $out"; fi; }
 V=1.5.14-wsl.5+abc1234.fwdef5678
 want PASS                         "release build"                        $(mk r1 $T/h-rel $V)
+# provd <rootfs> <provd binary> [init: rel|test] [conf: ok|nopolicy|dest] — adds a P2 provd to a mk'd rootfs
+provd(){ local d=$1 rel='<allow send_interface="org.bluez.GattCharacteristic1"/>'; mkdir -p $d/etc/init.d $d/etc/dbus-1/system.d
+  cp $2 $d/usr/bin/batman-provd
+  case "${3:-rel}" in rel) echo 'procd_add_jail batman-provd log requirejail' ;; *) echo 'ENVF=$EDIR/provd.env' ;; esac > $d/etc/init.d/batman-provd
+  { case "${4:-ok}" in dest) echo '<allow send_destination="x" send_interface="org.bluez.GattCharacteristic1"/>' ;; *) echo "$rel" ;; esac
+    for i in org.bluez.GattDescriptor1 org.bluez.LEAdvertisement1 org.freedesktop.DBus.ObjectManager org.freedesktop.DBus.Properties; do echo "<allow send_interface=\"$i\"/>"; done
+    [ "${4:-ok}" = nopolicy ] || echo '<policy user="provd">'; } > $d/etc/dbus-1/system.d/bluetooth.conf
+  echo $d; }
+if [ $HAVE_PROVD = 1 ]; then
+want PASS                         "release build with provd"             $(provd $(mk p1 $T/h-rel $V) $T/p-rel)
+want FAIL:"carries prov_test strings" "normal build, prov_test provd"    $(provd $(mk p2 $T/h-rel $V) $T/p-pt)
+want FAIL:"is the prov_test init" "normal build, provd test init"        $(provd $(mk p3 $T/h-rel $V) $T/p-rel test)
+want FAIL:"has no provd policy"   "normal build, no provd dbus policy"   $(provd $(mk p4 $T/h-rel $V) $T/p-rel rel nopolicy)
+want FAIL:"is gone or has a destination" "root call-back line with a destination" $(provd $(mk p5 $T/h-rel $V) $T/p-rel rel dest)
+d=$(provd $(mk p6 $T/h-rel $V) $T/p-rel); touch $d/usr/bin/btmgmt
+want FAIL:"btmgmt in a release image" "normal build with btmgmt"        $d
+else echo "skip provd cases: BATMAN_SRC has no cmd/batman-provd (pre-P2 pin)"; fi
 want FAIL:"-tags prov_test"       "normal build with prov_test helper"   $(mk r2 $T/h-pt $V)
 want FAIL:"prov_test marker"      "normal build, marker only"            $(mk r2m $T/h-mark $V)
 want FAIL:"killpoint strings"     "normal build, killpoint string only"  $(mk r2k $T/h-kp $V)

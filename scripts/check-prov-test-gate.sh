@@ -66,6 +66,27 @@ noseam(){
 	[ "$(cnt 'claim-after-persist\|claim-before-shadow')" = 0 ] || fail "$1: helper carries killpoint point names"
 }
 
+# #254 P2 (Batman docs/design/254-p2-impl.md §9): batman-provd in its release shape — no prov_test switch or frame
+# socket in the binary, the release init (it never reads provd.env), the provd dbus policy, the root policy's
+# call-back lines without a destination (§4.7: that is what lets bluetoothd call provd's objects), no btmgmt.
+# A rootfs without provd (a pre-P2 Batman pin) has nothing to check.
+provd_release(){
+	local P=$R/usr/bin/batman-provd I=$R/etc/init.d/batman-provd C=$R/etc/dbus-1/system.d/bluetooth.conf n i
+	[ -e "$P" ] || [ -L "$P" ] || return 0
+	[ -f "$P" ] && [ ! -L "$P" ] || fail "$1: /usr/bin/batman-provd is a symlink or not a regular file"
+	n=$(strings "$P" | grep -c -e SOCK_ONLY -e ADV_LEN_TEST -e provd-test)
+	[ "$n" = 0 ] || fail "$1: batman-provd carries prov_test strings ($n)"
+	[ -f "$I" ] && [ ! -L "$I" ] || fail "$1: no regular /etc/init.d/batman-provd"
+	! grep -q provd.env "$I" || fail "$1: /etc/init.d/batman-provd is the prov_test init (reads provd.env)"
+	[ -f "$C" ] && [ ! -L "$C" ] || fail "$1: no regular /etc/dbus-1/system.d/bluetooth.conf"
+	grep -q '<policy user="provd">' "$C" || fail "$1: bluetooth.conf has no provd policy"
+	for i in org.bluez.GattCharacteristic1 org.bluez.GattDescriptor1 org.bluez.LEAdvertisement1 \
+		org.freedesktop.DBus.ObjectManager org.freedesktop.DBus.Properties; do
+		grep -qF "<allow send_interface=\"$i\"/>" "$C" || fail "$1: bluetooth.conf root call-back line for $i is gone or has a destination"
+	done
+	[ ! -e "$R/usr/bin/btmgmt" ] || fail "$1: btmgmt in a release image"
+}
+
 if [ -z "$NAME" ]; then
 	[ -z "$WB" ] || fail "/etc/batman-build carries BATMAN_WBOX=$WB in a normal build"
 	case "$VER" in *wbox*) fail "version $VER names a wbox variant in a normal build" ;; esac
@@ -80,7 +101,8 @@ if [ -z "$NAME" ]; then
 	done
 	witnesses
 	[ -z "$W" ] || fail "rootfs carries wbox witness strings: $W"
-	echo "check-prov-test-gate: ok (no test seam; helper tags=[${TAGS}])"
+	provd_release "normal build"
+	echo "check-prov-test-gate: ok (no test seam; helper tags=[${TAGS}]$([ -f "$R/usr/bin/batman-provd" ] && echo "; provd release"))"
 	exit 0
 fi
 
