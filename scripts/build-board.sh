@@ -4,6 +4,7 @@
 # winson3QQ/Batman (also checked out at feeds/batman/docs/boards-and-builds.md).
 #
 #   scripts/build-board.sh <board> [--update-lock] [-j N]      as the tree owner: build + OTA payload
+#   scripts/build-board.sh <board> --wbox NAME [-j N]          a #254 test variant (Batman tests/wbox/NAME.patch)
 #   scripts/build-board.sh <board> --card-only                 AS ROOT, after a build: the card image
 #
 #     <board>        ekh-bcm2711 (Pi 4) | ekh-bcm2710 (Pi 3A+)
@@ -35,19 +36,23 @@
 set -euo pipefail
 
 BOARD=${1:-}; shift || true
-UPDATE_LOCK=0; CARD_ONLY=0; JOBS=$(nproc)
+UPDATE_LOCK=0; CARD_ONLY=0; JOBS=$(nproc); WBOX=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--update-lock) UPDATE_LOCK=1 ;;
 		--card-only) CARD_ONLY=1 ;;
 		-j) shift; JOBS=${1:?-j needs a number} ;;
+		--wbox) shift; WBOX=${1:?--wbox needs a variant name} ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac; shift
 done
+if [ -n "$WBOX" ] && { [ "$CARD_ONLY" = 1 ] || [ "$UPDATE_LOCK" = 1 ]; }; then
+	echo "--wbox builds an OTA payload only: not with --card-only (a wbox card would boot a test variant committed) or --update-lock" >&2; exit 2
+fi
 case "$BOARD" in
 	ekh-bcm2711) SUB=bcm2711; SOC=bcm2711 ;;
 	ekh-bcm2710) SUB=bcm2710; SOC=bcm2710 ;;
-	*) echo "usage: build-board.sh <ekh-bcm2711|ekh-bcm2710> [--update-lock | --card-only] [-j N]" >&2; exit 2 ;;
+	*) echo "usage: build-board.sh <ekh-bcm2711|ekh-bcm2710> [--update-lock | --card-only | --wbox NAME] [-j N]" >&2; exit 2 ;;
 esac
 TOP=$(pwd)
 [ -f scripts/openmanet_setup.sh ] && [ -f batman-release.env ] || { echo "run from the firmware tree root" >&2; exit 2; }
@@ -57,6 +62,11 @@ STAMP=logs/stamp-$BOARD.txt
 BOOTDIR=$TOP/logs/bootdir-$BOARD
 BT=bin/targets/bcm27xx/$SUB
 mkdir -p logs
+# #254: the -wbox steps (scripts/lib-wbox.sh); one build per tree; BATMAN_WBOX / BATMAN_PROV_TEST come from --wbox
+# only, never from the calling shell (r1 A-M2)
+. scripts/lib-wbox.sh
+bb_lock logs/.build-board.lock
+wbox_env_reset
 say(){ printf '\n=== [%s] %s\n' "$BOARD" "$*"; }
 norm(){ grep -E '^CONFIG_|^# CONFIG_.* is not set' "$1" | sort; }
 US=staging_dir/host/bin/unsquashfs4; command -v unsquashfs >/dev/null && US=unsquashfs
@@ -103,6 +113,17 @@ if [ "$CARD_ONLY" = 0 ]; then
 	sh scripts/check-batman-adv-source.sh
 	sh scripts/check-golang-rules.sh >&2 || { echo "golang rules still not synced after setup" >&2; exit 1; }
 
+	# #254 (Batman 254-h23 §4.2, §15.5, §16.7): a -wbox test variant = this build plus one mutant patch from the pinned
+	# Batman feed (tests/wbox/NAME.patch), applied after setup onto a CLEAN feed and always undone on exit (setup's -i
+	# does not reset feeds/batman: openmanet_setup.sh keeps it, so a normal build checks for a leftover mutant too);
+	# helpers.list decides the prov_test tag. The steps live in scripts/lib-wbox.sh (regression-tested by
+	# scripts/test-build-board-wbox.sh).
+	if [ -n "$WBOX" ]; then
+		wbox_apply "$WBOX" feeds/batman
+	else
+		wbox_normal_check feeds/batman
+	fi
+
 	say "3 config lock"
 	LOCK=boards/$BOARD/batman-config.lock
 	if [ "$UPDATE_LOCK" = 1 ]; then
@@ -138,6 +159,11 @@ if [ "$CARD_ONLY" = 0 ]; then
 		for p in $GOPKGS; do make "package/$p/clean" > "logs/goclean-$BOARD-$p.log" 2>&1 || { tail -20 "logs/goclean-$BOARD-$p.log" >&2; exit 1; }; done
 		echo "$GOSUM" > "$GOSTAMP.pending"
 	fi
+	# #254: the prov_test tag / a mutant reaches the Go package only through env + patched files, which OpenWrt's
+	# rebuild hash does not see (env) or sees only by mtime: clean both packages whenever the variant changes.
+	WBSTAMP=logs/wbox-$BOARD.stamp; WBNOW="${WBOX:-none}|${BATMAN_PROV_TEST:-0}"
+	wbclean(){ local p; for p in batman-prov batman-provision; do make "package/$p/clean" > "logs/wbclean-$BOARD-$p.log" 2>&1 || { tail -20 "logs/wbclean-$BOARD-$p.log" >&2; return 1; }; done; }
+	wbox_stamp_begin "$WBSTAMP" "$WBNOW" wbclean
 	if ! make -j"$JOBS" > "logs/build-$BOARD.log" 2>&1; then
 		echo "make failed — retrying -j1 V=s (parallel-build races happen; logs/build-$BOARD-v.log)" >&2
 		make -j1 V=s > "logs/build-$BOARD-v.log" 2>&1 || { tail -40 "logs/build-$BOARD-v.log" >&2; exit 1; }
@@ -150,6 +176,7 @@ if [ "$CARD_ONLY" = 0 ]; then
 	CPU=$([ "$SOC" = bcm2711 ] && echo a72 || echo a53)
 	sh scripts/check-go-toolchain.sh "build_dir/target-aarch64_cortex-${CPU}_musl/root-bcm27xx"
 	[ ! -f "logs/go-rules-$BOARD.stamp.pending" ] || mv "logs/go-rules-$BOARD.stamp.pending" "logs/go-rules-$BOARD.stamp"
+	wbox_stamp_done "$WBSTAMP" "$WBNOW"
 fi
 
 [ -f "$STAMP" ] || { echo "no $STAMP — build this board first (without --card-only)" >&2; exit 1; }
@@ -165,11 +192,15 @@ T=$("$US" -cat "$ROOTSQ" etc/openwrt_release 2>/dev/null | sed -n "s/^DISTRIB_TA
 [ "$T" = "$SUB" ] || { echo "rootfs DISTRIB_TARGET is '$T', board wants $SUB" >&2; exit 1; }
 echo "stamp in rootfs == $STAMP ($VER), DISTRIB_TARGET=$T"
 # #275: every board patch must be visible in THIS rootfs (its Batman-Witness), not only applied in feeds/
-WR=$(mktemp -d); "$US" -q -no-xattrs -f -d "$WR/r" "$ROOTSQ" >/dev/null 2>&1 || true
+# the gates below read this extraction; one that missed a regular file is a FAIL (scripts/gate-rootfs.sh, security
+# review F2; --card-only skips step 8, so this is the only gate a card gets)
+WR=$(mktemp -d); bash scripts/gate-rootfs.sh --extract "$ROOTSQ" "$WR/r" || { rm -rf "$WR"; exit 1; }
 cmp -s "$WR/r/etc/batman-patch-witness" <(sh scripts/patch-witness.sh list "$BOARD") 	|| { echo "the rootfs /etc/batman-patch-witness is not this tree's (stale build?)" >&2; rm -rf "$WR"; exit 1; }
 sh scripts/patch-witness.sh check "$BOARD" "$WR/r" "$(ls "$BT"/*.manifest | head -1)" || { rm -rf "$WR"; exit 1; }
 # #254: EEPROM persistent vars stay unread (the files/ shim, not the Morse reader, is in this rootfs)
 bash scripts/check-pvs-shim.sh "$WR/r" || { rm -rf "$WR"; exit 1; }
+# #254: the helper's test seams are absent from a normal build and really present in a -wbox variant
+bash scripts/check-prov-test-gate.sh "$WR/r" ${WBOX:+"$WBOX"} || { rm -rf "$WR"; exit 1; }
 rm -rf "$WR"
 
 if [ "$CARD_ONLY" = 0 ]; then

@@ -224,6 +224,13 @@ jobs:
           staging_dir/host/bin/unsquashfs4 -q -no-xattrs -f -d witness-root "$SQ" >/dev/null 2>&1 || true
           cmp witness-root/etc/batman-patch-witness <(sh scripts/patch-witness.sh list "${{ inputs.board }}")
           sh scripts/patch-witness.sh check "${{ inputs.board }}" witness-root             "$(ls "bin/targets/${{ inputs.target }}/${{ inputs.subtarget }}"/*.manifest | head -1)"
+          # #254: no helper test seam in a CI (normal) build — same gate as build-board.sh step 7 — and the gate's
+          # own self-test (real arm64 helpers from the pinned Batman source, built by this tree's Go)
+          bash scripts/check-prov-test-gate.sh witness-root
+          BATMAN_SRC=feeds/batman/feed/batman-prov/src bash scripts/test-prov-test-gate.sh
+          bash scripts/test-rc-button.sh witness-root   # #254 prov-unit-button: the SHIPPED reset buttons never wipe
+          # the -wbox steps build-board.sh runs (scripts/lib-wbox.sh), on a fake feed — no build
+          bash scripts/test-build-board-wbox.sh
           rm -rf witness-root
 
       # #89 A/B OTA: repackage the standard image's rootfs+boot into the batman A/B sysupgrade tar

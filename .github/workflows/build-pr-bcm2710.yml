@@ -17,6 +17,13 @@ on:
     - 'scripts/check-board-patches.sh'
     - 'scripts/board-patch-digest.sh'
     - 'scripts/patch-witness.sh'
+    - 'scripts/check-prov-test-gate.sh'
+    - 'scripts/test-prov-test-gate.sh'
+    - 'scripts/test-rc-button.sh'
+    - 'files/etc/rc.button/**'
+    - 'scripts/lib-wbox.sh'
+    - 'scripts/test-build-board-wbox.sh'
+    - 'scripts/build-board.sh'
     - 'scripts/stamp-batman-build.sh'
 
 jobs:

@@ -178,6 +178,16 @@ jobs:
           sudo losetup -d "$LOOP" || true
           ls -lah "artifacts/${{ inputs.board }}"
 
+      # #254 (security review F2): the test-seam gate on exactly the root.squashfs the A/B payload ships. Its own
+      # step, without continue-on-error: a FAIL fails the job, so no artifact is uploaded. CI builds normal images
+      # only, so the gate runs in normal mode (a BATMAN_WBOX stamp is itself a FAIL there).
+      - name: Test-seam gate on the payload rootfs (#254)
+        shell: bash
+        run: |
+          set -eu
+          [ -s root.squashfs ] || { echo "no root.squashfs (the A/B payload step did not carve one)"; exit 1; }
+          bash scripts/gate-rootfs.sh root.squashfs --normal
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
