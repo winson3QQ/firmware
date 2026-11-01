@@ -1,0 +1,61 @@
+From: Batman <noreply@batman.invalid>
+Subject: [PATCH] bluez: remove advertising instances before powering off (#254 D3c)
+
+winson3QQ/Batman#254 P2 (docs/design/254-p2-impl.md §22). Adds bluez feed patch 901 (src/adapter.c,
+src/advertising.c/.h): adapter_shutdown() queues Remove Advertising (all) on the adapter's mgmt ahead of
+SET_POWERED off. A power-off keeps advertising instances without a timeout and the next power on enables
+them again before batman-provd checks its preconditions (04 wsl.20 btmon, 2026-11-01). Made on the tree
+with 900 applied (both edit src/adapter.c).
+
+Batman-Witness: file usr/bin/bluetoothd Batman: advertising instances removed before power off
+--- /dev/null
++++ b/feeds/packages/utils/bluez/patches/901-batman-adv-remove-before-poweroff.patch
+@@ -0,0 +1,48 @@
++Batman #254 D3c: remove advertising instances before powering off (docs/design/254-p2-impl.md §22)
++
++adapter_shutdown() powered the adapter off without removing the advertising instances; the kernel
++keeps instances without a timeout across a power-off and enables them again at the next power on,
++before the advertiser (batman-provd) checks its preconditions. Queue Remove Advertising (all) on the
++adapter's mgmt ahead of SET_POWERED off, while the controller is still powered.
++
++--- a/src/adapter.c
+++++ b/src/adapter.c
++@@ -10929,6 +10929,11 @@
++ 
++ 		clear_discoverable(adapter);
++ 		remove_temporary_devices(adapter);
+++		if (adapter->adv_manager) {
+++			btd_adv_manager_remove_all(adapter->adv_manager);
+++			info("Batman: advertising instances removed before power off (hci%u)",
+++							adapter->dev_id);
+++		}
++ 		set_mode(adapter, MGMT_OP_SET_POWERED, 0x00);
++ 
++ 		adapter_remaining++;
++--- a/src/advertising.c
+++++ b/src/advertising.c
++@@ -2027,3 +2027,17 @@
++ 
++ 	queue_foreach(manager->clients, manager_refresh, NULL);
++ }
+++
+++/* Batman #254 D3c: remove every advertising instance of this adapter. Queued
+++ * on the adapter's mgmt (FIFO, one request at a time) by adapter_shutdown()
+++ * ahead of SET_POWERED off, so the removal runs while the controller is still
+++ * powered: a power-off keeps instances without a timeout and the next power on
+++ * would advertise them again, outside the advertiser's control.
+++ */
+++void btd_adv_manager_remove_all(struct btd_adv_manager *manager)
+++{
+++	if (!manager)
+++		return;
+++
+++	remove_advertising(manager, 0);
+++}
++--- a/src/advertising.h
+++++ b/src/advertising.h
++@@ -15,3 +15,4 @@
++ 							struct mgmt *mgmt);
++ void btd_adv_manager_destroy(struct btd_adv_manager *manager);
++ void btd_adv_manager_refresh(struct btd_adv_manager *manager);
+++void btd_adv_manager_remove_all(struct btd_adv_manager *manager);
