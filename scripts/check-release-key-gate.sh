@@ -27,8 +27,8 @@ ST=$R/etc/batman-build
 sv(){ [ -f "$ST" ] && sed -n "s/^$1=//p" "$ST" | head -1; }
 CH=$(sv BATMAN_CHANNEL); BENCH=$(sv BATMAN_BENCH_TRUST)
 oneline(){ # <file> -> its single line (fails on anything else)
-	[ -f "$1" ] && [ ! -L "$1" ] || fail "${1#$R} is not a regular file"
-	[ "$(wc -l < "$1")" -le 1 ] && [ "$(wc -c < "$1")" -le 256 ] || fail "${1#$R} is not one short line"
+	[ -f "$1" ] && [ ! -L "$1" ] || fail "${1#"$R"} is not a regular file"
+	[ "$(wc -l < "$1")" -le 1 ] && [ "$(wc -c < "$1")" -le 256 ] || fail "${1#"$R"} is not one short line"
 	tr -d '\n' < "$1"
 }
 have=0; { [ -e "$KP" ] || [ -L "$KP" ] || [ -e "$KS" ] || [ -L "$KS" ]; } && have=1
