@@ -227,6 +227,9 @@ jobs:
           # #254: no helper test seam in a CI (normal) build — same gate as build-board.sh step 7 — and the gate's
           # own self-test (real arm64 helpers from the pinned Batman source, built by this tree's Go)
           bash scripts/check-prov-test-gate.sh witness-root
+          # #254 P3 §3.7.2: the whole gate on the rootfs the artifacts carry, CI mode (no wbox, no bench build)
+          bash scripts/gate-rootfs.sh "$SQ" --ci
+          bash scripts/test-release-key-gate.sh
           BATMAN_SRC=feeds/batman/feed/batman-prov/src bash scripts/test-prov-test-gate.sh
           bash scripts/test-rc-button.sh witness-root   # #254 prov-unit-button: the SHIPPED reset buttons never wipe
           # the -wbox steps build-board.sh runs (scripts/lib-wbox.sh), on a fake feed — no build

@@ -5,6 +5,9 @@
 #
 #   scripts/build-board.sh <board> [--update-lock] [-j N]      as the tree owner: build + OTA payload
 #   scripts/build-board.sh <board> --wbox NAME [-j N]          a #254 test variant (Batman tests/wbox/NAME.patch)
+#   scripts/build-board.sh <board> --bench [...]               #254 P3: a BENCH build — trusts the public test root
+#                  T (Batman tests/keys/T.pub), so anyone can sign an update it installs: bench nodes (02 / 04) only,
+#                  never released; ".bench" in the version (stamp-batman-build.sh, §3.7.2)
 #   scripts/build-board.sh <board> --card-only                 AS ROOT, after a build: the card image
 #
 #     <board>        ekh-bcm2711 (Pi 4) | ekh-bcm2710 (Pi 3A+)
@@ -36,13 +39,14 @@
 set -euo pipefail
 
 BOARD=${1:-}; shift || true
-UPDATE_LOCK=0; CARD_ONLY=0; JOBS=$(nproc); WBOX=""
+UPDATE_LOCK=0; CARD_ONLY=0; JOBS=$(nproc); WBOX=""; BENCH=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--update-lock) UPDATE_LOCK=1 ;;
 		--card-only) CARD_ONLY=1 ;;
 		-j) shift; JOBS=${1:?-j needs a number} ;;
 		--wbox) shift; WBOX=${1:?--wbox needs a variant name} ;;
+		--bench) BENCH=1 ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac; shift
 done
@@ -52,7 +56,7 @@ fi
 case "$BOARD" in
 	ekh-bcm2711) SUB=bcm2711; SOC=bcm2711 ;;
 	ekh-bcm2710) SUB=bcm2710; SOC=bcm2710 ;;
-	*) echo "usage: build-board.sh <ekh-bcm2711|ekh-bcm2710> [--update-lock | --card-only | --wbox NAME] [-j N]" >&2; exit 2 ;;
+	*) echo "usage: build-board.sh <ekh-bcm2711|ekh-bcm2710> [--update-lock | --card-only | --wbox NAME] [--bench] [-j N]" >&2; exit 2 ;;
 esac
 TOP=$(pwd)
 [ -f scripts/openmanet_setup.sh ] && [ -f batman-release.env ] || { echo "run from the firmware tree root" >&2; exit 2; }
@@ -138,7 +142,7 @@ if [ "$CARD_ONLY" = 0 ]; then
 	echo ".config == $LOCK"
 
 	say "4 stamp"
-	sh scripts/stamp-batman-build.sh "$BOARD"
+	sh scripts/stamp-batman-build.sh "$BOARD" ${BENCH:+--bench T}
 	cp files/etc/batman-build "$STAMP"
 	# #254 P2 (Batman docs/design/254-p2-impl.md §4.8): the BLE advertising-data bounds backport must be the pinned
 	# Batman master copy byte for byte — pin drift is refused here, not found on a node
@@ -210,6 +214,8 @@ sh scripts/patch-witness.sh check "$BOARD" "$WR/r" "$(ls "$BT"/*.manifest | head
 bash scripts/check-pvs-shim.sh "$WR/r" || { rm -rf "$WR"; exit 1; }
 # #254: the helper's test seams are absent from a normal build and really present in a -wbox variant
 bash scripts/check-prov-test-gate.sh "$WR/r" ${WBOX:+"$WBOX"} || { rm -rf "$WR"; exit 1; }
+# #254 P3 §3.7.2: the release root key is the one this build kind may carry (rel = R, bench = T, else none)
+bash scripts/check-release-key-gate.sh "$WR/r" || { rm -rf "$WR"; exit 1; }
 rm -rf "$WR"
 
 if [ "$CARD_ONLY" = 0 ]; then

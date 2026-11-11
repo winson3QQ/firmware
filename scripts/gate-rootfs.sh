@@ -5,6 +5,8 @@
 #       extract the squashfs, refuse an incomplete extraction, run scripts/check-prov-test-gate.sh on it. The variant
 #       name comes from the image's own stamp (no BATMAN_WBOX = a normal build: every seam rule applies; a -wbox image
 #       is held to its variant's rules). --normal: CI builds only normal images — a BATMAN_WBOX stamp is then a FAIL.
+#       --ci: --normal, and a bench build (BATMAN_BENCH_TRUST) is a FAIL too. Every mode then runs
+#       scripts/check-release-key-gate.sh on the same extraction (#254 P3 §3.7.2: which root key the image may carry).
 #   gate-rootfs.sh --extract <root.squashfs> <dir>
 #       only the extraction + completeness check (build-board.sh step 7 runs its other checks on the same tree)
 # unsquashfs: the host's `unsquashfs` if on PATH, else the tree's staging_dir/host/bin/unsquashfs4. As a non-root user
@@ -28,10 +30,11 @@ case "${1:-}" in
 	--extract) [ $# = 3 ] || fail "usage: gate-rootfs.sh --extract <root.squashfs> <dir>"; extract "$2" "$3"; exit 0 ;;
 	''|-*) fail "usage: gate-rootfs.sh <root.squashfs> [--normal] | --extract <root.squashfs> <dir>" ;;
 esac
-SQ=$1; NORMAL=0
-case "${2:-}" in '') ;; --normal) NORMAL=1 ;; *) fail "unknown argument $2" ;; esac
+SQ=$1; NORMAL=0; KMODE=--normal
+case "${2:-}" in '') ;; --normal) NORMAL=1 ;; --ci) NORMAL=1; KMODE=--ci ;; *) fail "unknown argument $2" ;; esac
 [ $# -le 2 ] || fail "too many arguments"
 W=$(mktemp -d) || fail "mktemp"; trap 'rm -rf "$W"' EXIT
 extract "$SQ" "$W/r"
 WB=""; [ $NORMAL = 1 ] || WB=$(sed -n 's/^BATMAN_WBOX=//p' "$W/r/etc/batman-build" 2>/dev/null | head -1)
-bash "$TOP/scripts/check-prov-test-gate.sh" "$W/r" ${WB:+"$WB"}
+bash "$TOP/scripts/check-prov-test-gate.sh" "$W/r" ${WB:+"$WB"} || exit 1
+bash "$TOP/scripts/check-release-key-gate.sh" "$W/r" $KMODE
