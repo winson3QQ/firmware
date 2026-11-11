@@ -70,6 +70,10 @@ st "build-board.sh step 7 runs it after the --extract" \
 	"e=\$(grep -n 'gate-rootfs.sh --extract' $BB | head -1 | cut -d: -f1); k=\$(grep -n 'check-release-key-gate.sh \"\$WR/r\"' $BB | head -1 | cut -d: -f1); [ -n \"\$e\" ] && [ -n \"\$k\" ] && [ \"\$e\" -lt \"\$k\" ]"
 st "build-firmware.yml: gate-rootfs.sh --ci before the upload" \
 	"g=\$(grep -n 'bash scripts/gate-rootfs.sh \"\$SQ\" --ci' $BF | head -1 | cut -d: -f1); u=\$(grep -n '^      - name: Upload' $BF | head -1 | cut -d: -f1); [ -n \"\$g\" ] && [ -n \"\$u\" ] && [ \"\$g\" -lt \"\$u\" ]"
+FB=$FW/.github/workflows/fast-build.yml
+st "fast-build.yml: gate-rootfs.sh (runs the key gate) before its upload" \
+	"g=\$(grep -n 'bash scripts/gate-rootfs.sh root.squashfs --normal' $FB | head -1 | cut -d: -f1); u=\$(grep -n '^      - name: Upload' $FB | head -1 | cut -d: -f1); [ -n \"\$g\" ] && [ -n \"\$u\" ] && [ \"\$g\" -lt \"\$u\" ]"
+st "build-firmware.yml runs the stamp test" "grep -q 'bash scripts/test-stamp-release-key.sh' $BF"
 st "build-board.sh passes --bench only as '--bench T' to the stamp" "grep -q 'stamp-batman-build.sh \"\$BOARD\" \${BENCH:+--bench T}' $BB"
 echo "release-key-gate tests: $pass ok, $bad bad"
 [ $bad = 0 ] && [ $pass -gt 0 ]
