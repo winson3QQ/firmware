@@ -14,9 +14,9 @@ fail=0
 ck() { if [ "$2" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1: got [$2] want [$3]"; fail=1; fi; }
 mk() { # channel
 	rm -rf $T/fw; mkdir -p $T/fw/scripts $T/fw/feeds/batman/tests/keys
-	cd $T/fw/feeds/batman && git init -q && cp $TPUB tests/keys/T.pub && git add -A && git -c user.email=x@x -c user.name=x commit -qm feed
+	cd $T/fw/feeds/batman || exit 1; git init -q && cp $TPUB tests/keys/T.pub && git add -A && git -c user.email=x@x -c user.name=x commit -qm feed
 	PIN=$(git rev-parse HEAD)
-	cd $T/fw
+	cd $T/fw || exit 1
 	cp "$STAMP" scripts/stamp-batman-build.sh
 	for s in check-feed-pins.sh check-board-patches.sh board-patch-digest.sh; do printf '#!/bin/sh\nexit 0\n' > scripts/$s; done
 	printf '#!/bin/sh\n[ "$1" = list ] && exit 0\n' > scripts/patch-witness.sh
