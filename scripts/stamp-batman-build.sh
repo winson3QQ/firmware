@@ -1,7 +1,14 @@
 #!/bin/sh
 # stamp-batman-build.sh — write files/etc/batman-build for this build (#209 S5). Never hand-edit it.
 #
-#   scripts/stamp-batman-build.sh <board>        board = ekh-bcm2711 | ekh-bcm2710 | ...
+#   scripts/stamp-batman-build.sh <board> [--bench T]        board = ekh-bcm2711 | ekh-bcm2710 | ...
+#
+# #254 P3 §3.7.2: the image's release root key (what the app update trusts) is placed HERE, by the build kind:
+#   rel           keys/release-root.pub (R) + keys/release-min-serial — missing (before #255) = the rel build fails
+#   --bench T     the batman feed's tests/keys/T.pub + min-serial 1, BATMAN_BENCH_TRUST=T, ".bench" in the version
+#                 (bench nodes such as 02 / 04 only; only from this ARGUMENT — never from the environment — so a CI
+#                 env: or a bare stamp run never makes one; rel + --bench refuses)
+#   wsl / ci      no key: the app update answers reason 24 (ssh sysupgrade / reflash only)
 #
 # Run from the firmware tree root, AFTER openmanet_setup.sh (needs .config and feeds/batman) and
 # BEFORE make (OpenWrt bakes files/ into the rootfs). Release metadata comes from batman-release.env;
@@ -16,12 +23,20 @@
 # files under the build inputs, a feeds.conf override, or a modified feeds/batman checkout. A dirty
 # build may be tested, never released (scripts/build-board.sh prints it; batman-version shows it).
 set -eu
-BOARD=${1:?usage: stamp-batman-build.sh <board>}
+BOARD=${1:?usage: stamp-batman-build.sh <board> [--bench T]}
+BENCH=""
+case "${2:-}" in
+'') ;;
+--bench) [ "${3:-}" = T ] || { echo "stamp: --bench takes exactly T" >&2; exit 1; }; BENCH=T ;;
+*) echo "usage: stamp-batman-build.sh <board> [--bench T]" >&2; exit 1 ;;
+esac
 [ -f batman-release.env ] && [ -f .config ] && [ -d feeds/batman/.git ] || {
 	echo "stamp: run from the firmware tree root after openmanet_setup.sh (need batman-release.env, .config, feeds/batman)" >&2; exit 1; }
 get(){ sed -n "s/^$1=//p" batman-release.env | head -1; }
 REL=$(get BATMAN_RELEASE); CH=$(get BATMAN_CHANNEL); N=$(get BATMAN_BUILD_N)
 [ -n "$REL" ] && [ -n "$CH" ] && [ -n "$N" ] || { echo "stamp: batman-release.env lacks BATMAN_RELEASE/CHANNEL/BUILD_N" >&2; exit 1; }
+case "$CH" in wsl | ci | rel) ;; *) echo "stamp: BATMAN_CHANNEL '$CH' is not wsl / ci / rel" >&2; exit 1 ;; esac
+[ "$CH" = rel ] && [ -n "$BENCH" ] && { echo "stamp: a rel build never trusts the test root (--bench)" >&2; exit 1; }
 
 PIN=$(sed -n 's|^src-git batman [^^]*\^\([0-9a-f]\{7,40\}\).*|\1|p' feeds.conf.default | head -1)
 [ -n "$PIN" ] || { echo "stamp: no batman pin in feeds.conf.default" >&2; exit 1; }
@@ -54,7 +69,23 @@ F7=$(printf %.7s "$FEED"); W7=$(printf %.7s "$FW")
 # #254 (254-h23 §4.2): a -wbox test variant is never a release: DIRTY forced, the variant in the version
 WBOX=${BATMAN_WBOX:-}
 case "$WBOX" in '') ;; *[!a-z0-9-]*) echo "stamp: bad BATMAN_WBOX '$WBOX'" >&2; exit 1 ;; *) DIRTY=1; why="$why wbox-$WBOX" ;; esac
-VER="$REL-$CH.$N+$F7.fw$W7"; [ "$DIRTY" = 1 ] && VER="$VER.dirty"; [ -n "$WBOX" ] && VER="$VER.wbox-$WBOX"
+VER="$REL-$CH.$N+$F7.fw$W7"; [ -n "$BENCH" ] && VER="$VER.bench" # before .dirty / .wbox- (prov-254.sh name match)
+[ "$DIRTY" = 1 ] && VER="$VER.dirty"; [ -n "$WBOX" ] && VER="$VER.wbox-$WBOX"
+
+# the root key files: removed first (they are .gitignore'd; a tree that built bench before must not leave T in
+# the next ordinary build), then placed by the build kind
+KD=files/usr/share/batman
+rm -f "$KD/release-root.pub" "$KD/release-min-serial"
+case "$CH:$BENCH" in
+rel:)
+	[ -f keys/release-root.pub ] && [ ! -L keys/release-root.pub ] && [ -f keys/release-min-serial ] && [ ! -L keys/release-min-serial ] || {
+		echo "stamp: a rel build needs keys/release-root.pub and keys/release-min-serial (the release root R, #255)" >&2; exit 1; }
+	mkdir -p "$KD"; cp keys/release-root.pub "$KD/release-root.pub"; cp keys/release-min-serial "$KD/release-min-serial" ;;
+*:T)
+	TP=feeds/batman/tests/keys/T.pub
+	[ -f "$TP" ] && [ ! -L "$TP" ] || { echo "stamp: --bench but the batman feed has no tests/keys/T.pub" >&2; exit 1; }
+	mkdir -p "$KD"; cp "$TP" "$KD/release-root.pub"; echo 1 > "$KD/release-min-serial" ;;
+esac
 
 mkdir -p files/etc
 {
@@ -72,7 +103,8 @@ mkdir -p files/etc
 	echo "BATMAN_FEATURES=$(get BATMAN_FEATURES)"
 	echo "BATMAN_NOTE=$(get BATMAN_NOTE)"
 	[ -z "$WBOX" ] || echo "BATMAN_WBOX=$WBOX"
+	[ -z "$BENCH" ] || echo "BATMAN_BENCH_TRUST=$BENCH"
 } > files/etc/batman-build
 printf '%s
 ' "$WIT" | grep . > files/etc/batman-patch-witness || : > files/etc/batman-patch-witness
-echo "stamp: $VER board=$BOARD dirty=$DIRTY${why:+ ($why)}"
+echo "stamp: $VER board=$BOARD dirty=$DIRTY${why:+ ($why)} root-key=$([ -f "$KD/release-root.pub" ] && { [ -n "$BENCH" ] && echo T || echo R; } || echo none)"

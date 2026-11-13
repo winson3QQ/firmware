@@ -38,3 +38,6 @@ git-src
 # generated at build time by scripts/stamp-batman-build.sh (#209 S5) — never commit
 files/etc/batman-build
 files/etc/batman-patch-witness
+# the release root key files, placed by stamp-batman-build.sh by build kind (#254 P3 §3.7.2)
+files/usr/share/batman/release-root.pub
+files/usr/share/batman/release-min-serial
