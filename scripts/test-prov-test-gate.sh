@@ -1,4 +1,5 @@
 #!/bin/bash
+# CI check (Batman#108, 2026-11-17): this line only triggers the PR build after Actions was re-enabled; PR not merged.
 # test-prov-test-gate.sh — self-test of scripts/check-prov-test-gate.sh: every case must PASS, or FAIL for the
 # listed reason (a FAIL for another reason is BAD: it would hide that the listed check is gone).
 # Builds real arm64 helpers (-s -w -trimpath, like OpenWrt) from BATMAN_SRC: release, prov_test, and mutants:
