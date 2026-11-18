@@ -6,24 +6,27 @@ hciattach/hcitool/rfcomm/gatttool/sdptool (bluez-utils*), no upstream /etc/bluet
 /etc/dbus-1/system.d/bluetooth.conf (it lets every local uid drive org.bluez) or init — the batman-ble
 package owns those. bluez-libs depends on kmod-batman-bt (LE-only stack, hci_uart+btbcm) instead of
 kmod-bluetooth, whose hard-coded BT_HCIUART_BCM=n can never probe the Pi's UART Bluetooth.
+r4 (Batman#108): --disable-obex. Dropping +libical left configure's obex check (libical is required)
+satisfied only by a stale staging_dir; a clean tree (GitHub CI run 44040898724) failed.
 Design: docs/design/254-stage1-impl.md §4.6.
 
-Batman-Witness: pkg bluez-daemon 5.72-r3
+Batman-Witness: pkg bluez-daemon 5.72-r4
 --- a/feeds/packages/utils/bluez/Makefile
 +++ b/feeds/packages/utils/bluez/Makefile
-@@ -9,7 +9,10 @@
+@@ -9,7 +9,11 @@
  
  PKG_NAME:=bluez
  PKG_VERSION:=5.72
 -PKG_RELEASE:=2
 +# Batman #254 (board patch 0012): -daemon is bluetoothd + bluetoothctl only (no obexd, no hciattach/
 +# rfcomm/gatttool, no upstream main.conf / dbus policy / init — batman-ble owns those); -libs depends on
-+# kmod-batman-bt (LE-only stack) instead of kmod-bluetooth.
-+PKG_RELEASE:=3
++# kmod-batman-bt (LE-only stack) instead of kmod-bluetooth. r4: --disable-obex — obexd is not shipped and
++# -daemon no longer depends on libical, which configure requires whenever obex is on (Batman#108 clean CI build).
++PKG_RELEASE:=4
  
  PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
  PKG_SOURCE_URL:=@KERNEL/linux/bluetooth/
-@@ -37,7 +40,7 @@
+@@ -37,7 +41,7 @@
    SECTION:=libs
    CATEGORY:=Libraries
    TITLE+= library
@@ -32,7 +35,7 @@ Batman-Witness: pkg bluez-daemon 5.72-r3
  endef
  
  define Package/bluez-utils
-@@ -69,15 +72,10 @@
+@@ -69,15 +73,10 @@
    SECTION:=utils
    CATEGORY:=Utilities
    TITLE+= daemon
@@ -49,7 +52,16 @@ Batman-Witness: pkg bluez-daemon 5.72-r3
  endef
  
  CONFIGURE_ARGS += \
-@@ -147,16 +145,7 @@
+@@ -87,7 +86,7 @@
+ 	--enable-experimental \
+ 	--enable-library \
+ 	--enable-monitor \
+-	--enable-obex \
++	--disable-obex \
+ 	--enable-threads \
+ 	--enable-tools \
+ 	--disable-android \
+@@ -147,16 +146,7 @@
  	$(INSTALL_DIR) $(1)/usr/bin
  	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/bluetooth/bluetoothd $(1)/usr/bin/
  	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/bluetoothctl $(1)/usr/bin/
